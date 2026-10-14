@@ -15,3 +15,6 @@ Mobilní webová aplikace pro ruční porovnání dvou týmů NHL a pět analyti
 
 ## Omezení
 Není proveden historický backtest ani kalibrace pravděpodobností. Nejde o ověřený prediktivní model. Zatím bez síly soupeřů, potvrzených brankářů a xG. Pro celé období se používá aktuální sezóna; pro 5/10/20/30 zápasů může historie na začátku sezóny zasahovat do předchozích sezón. Data z NHL Web API mohou být dočasně nedostupná. Výsledky nejsou doporučení k sázení.
+
+
+Oprava trhu „Více střel“: Tipsport používá třícestné vyhodnocení; shodný počet střel není vrácení vkladu. Model pravděpodobnost shody počítá, ale nenabízí ji jako tip. Férový kurz = 1 / P(výhry); EV = P(výhry) × kurz − 1.
