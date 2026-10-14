@@ -1,21 +1,26 @@
-# NHL Team Shots Analyzer v0.2
+# NHL Team Shots Analyzer 0.3
 
-Mobilní webová aplikace s proxy serverem pro NHL Web API.
+Mobilní webová aplikace pro ruční porovnání dvou týmů NHL a pět trhů:
+- více střel na branku (dvoucestný trh s vrácením vkladu při shodě),
+- počet střel vybraného týmu nad/pod hranicí,
+- celkový počet střel nad/pod hranicí,
+- celkový počet gólů nad/pod hranicí,
+- vítěz po 60 minutách a dvojtip 1X / X2 / 12.
 
-## Spuštění na počítači
+## Spuštění
 
-Vyžaduje Python 3.10+. Ve složce aplikace spusťte:
+Soubory `index.html` a `server.py` musí být ve stejném adresáři.
 
 ```bash
 python server.py
 ```
 
-Otevřete `http://localhost:8000`. **Neotevírejte `index.html` přímo jako stažený soubor** – potřebuje serverový endpoint `/api`.
+Pak otevřete http://localhost:8000. Na Renderu nastavte Python, Build Command `echo "No dependencies"`, Start Command `python server.py`, Root Directory prázdné a Free instance.
 
-## Zpřístupnění na mobilu
+## Aktualizace stávajícího Render nasazení
 
-Aplikaci nasaďte na hosting, který umí spustit Python server (například Render nebo Railway). Spouštěcí příkaz: `python server.py`; hosting předá port proměnnou `PORT`. Poté otevřete přidělenou HTTPS adresu na mobilu. Při lokálním spuštění ve stejné Wi-Fi síti lze použít IP adresu počítače a port 8000 (pokud to firewall dovolí).
+Nahrajte soubory `index.html`, `server.py`, `README.md` přímo do kořene GitHub repozitáře `rinkmetrics` (ne celý ZIP). Render s automatickým deployem nasadí změny po commitu. `server.py` je kompatibilní s proměnnou `PORT` na Renderu.
 
-## Omezení
+## Důležité hranice modelu
 
-Neproběhl živý test dostupnosti NHL API z hostingu. Model je orientační, nevalidovaný na historických sázkách; nepočítá automaticky domácí/venkovní efekt, změny sestav ani pravidla vyhodnocení remízy. Pokud není dostatek dokončených zápasů základní části, aplikace může použít starší sezóny.
+Používá veřejné NHL API přes vlastní omezený proxy server. Model je zjednodušený Poissonův odhad z průměrů střel/gólů a povolených střel/gólů, **není backtestovaný**. Přepínač domácího týmu slouží k označení; model zatím neupravuje pravděpodobnosti podle domácí/venkovní formy. Zobrazené výpočty pro góly se opírají o konečné skóre z boxscore (může zahrnovat prodloužení či rozhodující nájezd), takže model trhu po 60 minutách je jen orientační a pro přesné vyhodnocení potřebuje samostatná data po třetinách. Vítěz včetně prodloužení není implementován. Před skutečným sázením je nutné model ověřit na historických datech a ověřit pravidla vyhodnocení konkrétní sázkové kanceláře.
