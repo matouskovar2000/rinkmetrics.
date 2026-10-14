@@ -1,17 +1,17 @@
-# NHL Team Shots Analyzer 0.5
+# NHL Team Shots Analyzer 0.6
 
-Statická mobilní webová aplikace s Python proxy serverem pro veřejné NHL Web API. Spuštění: `python server.py`, otevřít `http://localhost:8000`. Render start command: `python server.py`.
+Tři soubory nahrajte do kořene stejného GitHub repozitáře: `index.html`, `server.py`, `README.md`. Render používá příkaz `python server.py`.
 
-## Nové ve verzi 0.5
-- Černý, červený, bílý a modrý design; pravděpodobnosti bíle, záporné EV červeně.
-- Záložka **Moje tipy** s místním uložením, exportem/importem JSON a automatickým vyhodnocením dokončených zápasů z NHL API pro střely a celkové góly. Pro výsledek 1X2 po 60 minutách zatím vyhodnocení záměrně čeká na přesná data třetin.
-- Orientační vzdálenost mezi arénami a informace o posledním zápase. Bez výběru konkrétního budoucího utkání nelze korektně stanovit skutečný cestovní plán.
-- Sestavy, zranění a potvrzení brankáři jsou výslovně označeny jako nedostupné; žádná neověřená data se nevymýšlejí.
-- Zachováno všech pět modelových trhů, ruční kurzy a předběžný model formy.
+## Nové funkce oproti 0.5
+- Výběr skutečného zápasu z rozpisu NHL; automaticky se nastaví domácí tým.
+- Odpočinek a back-to-back podle data vybraného zápasu a posledního odehraného utkání každého týmu.
+- Vzdálenost mezi místy posledního a příštího zápasu vzdušnou čarou. Není to reálná trasa ani přesný cestovní čas.
+- Odkaz na aktuální projektované sestavy NHL.com (informace nejsou automaticky parsované ani zahrnuté do modelu).
+- V deníku Moje tipy vyhodnocení trhu 1/X/2 a dvojtipů po 60 minutách z play-by-play prvních tří třetin.
+- Automatická kontrola čekajících tipů při otevření záložky Moje tipy. Ruční kontrola a export/import JSON zůstávají.
 
-## Důležité limity
-- Deník se ukládá **pouze v místním úložišti prohlížeče**. Použij export zálohy před změnou zařízení nebo vymazáním dat.
-- Vyhodnocení se provede po kliknutí na „Aktualizovat výsledky NHL“, nikoli na pozadí při zavřené aplikaci.
-- Datum zápasu musí odpovídat NHL gameDate a týmy musí být správně přiřazené doma/venku.
-- Poissonovy modely nejsou kalibrované ani backtestované. Únava, cestování, sestavy a absence **zatím neupravují pravděpodobnosti**.
-- Aplikace není napojena na Tipsport, nesbírá ani neodesílá sázky.
+## Omezení
+- Sestavy, absence, brankáři a cestování **zatím neupravují** pravděpodobnosti. Bez spolehlivých historických dat by přidání arbitrárních koeficientů budilo falešnou přesnost.
+- U zápasů na neutrální půdě může být vzdálenost nepřesná: mapování vychází z domácích arén týmů.
+- Data deníku se ukládají pouze do localStorage v daném prohlížeči. Pravidelně exportujte zálohu.
+- Model nebyl historicky kalibrován ani validován; kurzy se zadávají ručně.

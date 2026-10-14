@@ -1,11 +1,11 @@
-"""NHL Team Shots Analyzer 0.5 — static site and NHL API proxy."""
+"""NHL Team Shots Analyzer 0.6 — static site and NHL API proxy."""
 import json, os, re
 from pathlib import Path
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 ROOT=Path(__file__).resolve().parent
-ALLOWED=re.compile(r'^/(?:club-schedule-season/[A-Z]{3}/\d{8}|gamecenter/\d+/boxscore)$')
+ALLOWED=re.compile(r'^/(?:club-schedule-season/[A-Z]{3}/\d{8}|gamecenter/\d+/(?:boxscore|play-by-play))$')
 class Handler(SimpleHTTPRequestHandler):
  def __init__(self,*a,**kw): super().__init__(*a,directory=str(ROOT),**kw)
  def do_GET(self):
