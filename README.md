@@ -1,20 +1,17 @@
-# NHL Team Shots Analyzer 0.4
+# NHL Team Shots Analyzer 0.5
 
-Mobilní webová aplikace pro ruční porovnání dvou týmů NHL a pět analytických trhů: více střel, střely týmu O/U, celkové střely O/U, góly O/U, výsledek po 60 minutách a dvojtip.
+Statická mobilní webová aplikace s Python proxy serverem pro veřejné NHL Web API. Spuštění: `python server.py`, otevřít `http://localhost:8000`. Render start command: `python server.py`.
 
-## Novinky
-- Výběr posledních 5/10/20/30 zápasů, celé aktuální základní části nebo automatické formy.
-- Automatická forma: 55 % váhy širšího vzorku (až 30 zápasů), 25 % posledních 10 a 20 % posledních 5; váhy jsou předběžné, nebyly optimalizovány backtestem.
-- Korekce domácí/venkovní formy: pokud je alespoň 5 zápasů daného typu, 20 % váhy týmového průměru tvoří průměr pro dané prostředí.
-- Tabulka formy za 5/10/20/30 zápasů, střely povolené, rozdíl posledních pěti proti předchozím pěti.
-- Historická četnost překročení hranice u týmových střel a součtu střel či gólů.
-- Oddělení popisné historie od modelových pravděpodobností.
+## Nové ve verzi 0.5
+- Černý, červený, bílý a modrý design; pravděpodobnosti bíle, záporné EV červeně.
+- Záložka **Moje tipy** s místním uložením, exportem/importem JSON a automatickým vyhodnocením dokončených zápasů z NHL API pro střely a celkové góly. Pro výsledek 1X2 po 60 minutách zatím vyhodnocení záměrně čeká na přesná data třetin.
+- Orientační vzdálenost mezi arénami a informace o posledním zápase. Bez výběru konkrétního budoucího utkání nelze korektně stanovit skutečný cestovní plán.
+- Sestavy, zranění a potvrzení brankáři jsou výslovně označeny jako nedostupné; žádná neověřená data se nevymýšlejí.
+- Zachováno všech pět modelových trhů, ruční kurzy a předběžný model formy.
 
-## Spuštění
-`python server.py` (Python 3, bez externích závislostí), lokálně http://localhost:8000. Na Renderu: Build `echo "No dependencies"`, Start `python server.py`.
-
-## Omezení
-Není proveden historický backtest ani kalibrace pravděpodobností. Nejde o ověřený prediktivní model. Zatím bez síly soupeřů, potvrzených brankářů a xG. Pro celé období se používá aktuální sezóna; pro 5/10/20/30 zápasů může historie na začátku sezóny zasahovat do předchozích sezón. Data z NHL Web API mohou být dočasně nedostupná. Výsledky nejsou doporučení k sázení.
-
-
-Oprava trhu „Více střel“: Tipsport používá třícestné vyhodnocení; shodný počet střel není vrácení vkladu. Model pravděpodobnost shody počítá, ale nenabízí ji jako tip. Férový kurz = 1 / P(výhry); EV = P(výhry) × kurz − 1.
+## Důležité limity
+- Deník se ukládá **pouze v místním úložišti prohlížeče**. Použij export zálohy před změnou zařízení nebo vymazáním dat.
+- Vyhodnocení se provede po kliknutí na „Aktualizovat výsledky NHL“, nikoli na pozadí při zavřené aplikaci.
+- Datum zápasu musí odpovídat NHL gameDate a týmy musí být správně přiřazené doma/venku.
+- Poissonovy modely nejsou kalibrované ani backtestované. Únava, cestování, sestavy a absence **zatím neupravují pravděpodobnosti**.
+- Aplikace není napojena na Tipsport, nesbírá ani neodesílá sázky.
