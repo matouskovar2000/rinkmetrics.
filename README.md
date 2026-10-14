@@ -1,26 +1,17 @@
-# NHL Team Shots Analyzer 0.3
+# NHL Team Shots Analyzer 0.4
 
-Mobilní webová aplikace pro ruční porovnání dvou týmů NHL a pět trhů:
-- více střel na branku (dvoucestný trh s vrácením vkladu při shodě),
-- počet střel vybraného týmu nad/pod hranicí,
-- celkový počet střel nad/pod hranicí,
-- celkový počet gólů nad/pod hranicí,
-- vítěz po 60 minutách a dvojtip 1X / X2 / 12.
+Mobilní webová aplikace pro ruční porovnání dvou týmů NHL a pět analytických trhů: více střel, střely týmu O/U, celkové střely O/U, góly O/U, výsledek po 60 minutách a dvojtip.
+
+## Novinky
+- Výběr posledních 5/10/20/30 zápasů, celé aktuální základní části nebo automatické formy.
+- Automatická forma: 55 % váhy širšího vzorku (až 30 zápasů), 25 % posledních 10 a 20 % posledních 5; váhy jsou předběžné, nebyly optimalizovány backtestem.
+- Korekce domácí/venkovní formy: pokud je alespoň 5 zápasů daného typu, 20 % váhy týmového průměru tvoří průměr pro dané prostředí.
+- Tabulka formy za 5/10/20/30 zápasů, střely povolené, rozdíl posledních pěti proti předchozím pěti.
+- Historická četnost překročení hranice u týmových střel a součtu střel či gólů.
+- Oddělení popisné historie od modelových pravděpodobností.
 
 ## Spuštění
+`python server.py` (Python 3, bez externích závislostí), lokálně http://localhost:8000. Na Renderu: Build `echo "No dependencies"`, Start `python server.py`.
 
-Soubory `index.html` a `server.py` musí být ve stejném adresáři.
-
-```bash
-python server.py
-```
-
-Pak otevřete http://localhost:8000. Na Renderu nastavte Python, Build Command `echo "No dependencies"`, Start Command `python server.py`, Root Directory prázdné a Free instance.
-
-## Aktualizace stávajícího Render nasazení
-
-Nahrajte soubory `index.html`, `server.py`, `README.md` přímo do kořene GitHub repozitáře `rinkmetrics` (ne celý ZIP). Render s automatickým deployem nasadí změny po commitu. `server.py` je kompatibilní s proměnnou `PORT` na Renderu.
-
-## Důležité hranice modelu
-
-Používá veřejné NHL API přes vlastní omezený proxy server. Model je zjednodušený Poissonův odhad z průměrů střel/gólů a povolených střel/gólů, **není backtestovaný**. Přepínač domácího týmu slouží k označení; model zatím neupravuje pravděpodobnosti podle domácí/venkovní formy. Zobrazené výpočty pro góly se opírají o konečné skóre z boxscore (může zahrnovat prodloužení či rozhodující nájezd), takže model trhu po 60 minutách je jen orientační a pro přesné vyhodnocení potřebuje samostatná data po třetinách. Vítěz včetně prodloužení není implementován. Před skutečným sázením je nutné model ověřit na historických datech a ověřit pravidla vyhodnocení konkrétní sázkové kanceláře.
+## Omezení
+Není proveden historický backtest ani kalibrace pravděpodobností. Nejde o ověřený prediktivní model. Zatím bez síly soupeřů, potvrzených brankářů a xG. Pro celé období se používá aktuální sezóna; pro 5/10/20/30 zápasů může historie na začátku sezóny zasahovat do předchozích sezón. Data z NHL Web API mohou být dočasně nedostupná. Výsledky nejsou doporučení k sázení.
