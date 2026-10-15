@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.10 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.11 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -137,7 +137,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.10',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.11',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -164,7 +164,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.10', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.11', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -229,7 +229,8 @@ def _box_row(game, team):
     }
 
 
-def _history_before(team, game_date, n=30):
+def _history_games_before(team, game_date, n=30):
+    """Return the schedule rows used as pre-game history, without fetching boxscores yet."""
     start = _season_start(game_date)
     games = []
     for year in (start, start - 1):
@@ -240,11 +241,15 @@ def _history_before(team, game_date, n=30):
         date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
         if gid and _completed_regular(game) and date and date < game_date:
             unique[gid] = game
-    selected = sorted(
+    return sorted(
         unique.values(),
         key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '',
         reverse=True,
     )[:n]
+
+
+def _history_before(team, game_date, n=30):
+    selected = _history_games_before(team, game_date, n)
     if not selected:
         return []
     workers = min(8, len(selected))
@@ -341,8 +346,13 @@ def _regulation_result(game_id):
     return 'home' if home > away else 'away' if away > home else 'draw'
 
 
-def _add_prediction(bucket, probability, correct):
-    bucket.append({'p': max(0.0, min(1.0, probability)), 'y': 1 if correct else 0})
+def _add_prediction(bucket, probability, correct, side=None, actual=None):
+    row = {'p': max(0.0, min(1.0, probability)), 'y': 1 if correct else 0}
+    if side is not None:
+        row['side'] = side
+    if actual is not None:
+        row['actual'] = actual
+    bucket.append(row)
 
 
 def _calibration(predictions):
@@ -364,8 +374,11 @@ def _calibration(predictions):
 def _metric_summary(predictions, label, reference=None):
     if not predictions:
         return {'label': label, 'n': 0, 'accuracy': None, 'avg_probability': None, 'brier': None,
-                'reference': reference, 'calibration': []}
+                'reference': reference, 'calibration': [], 'over_picks': None, 'under_picks': None,
+                'actual_over_rate': None}
     n = len(predictions)
+    sides = [x.get('side') for x in predictions if x.get('side') in ('over', 'under')]
+    actuals = [x.get('actual') for x in predictions if x.get('actual') in ('over', 'under')]
     return {
         'label': label,
         'n': n,
@@ -374,15 +387,104 @@ def _metric_summary(predictions, label, reference=None):
         'brier': sum((x['p'] - x['y']) ** 2 for x in predictions) / n,
         'reference': reference,
         'calibration': _calibration(predictions),
+        'over_picks': sum(x == 'over' for x in sides) if sides else None,
+        'under_picks': sum(x == 'under' for x in sides) if sides else None,
+        'actual_over_rate': (sum(x == 'over' for x in actuals) / len(actuals)) if actuals else None,
     }
+
+
+TEAM_SHOT_LINES = (23.5, 25.5, 27.5, 29.5, 31.5)
+TOTAL_SHOT_LINES = (51.5, 53.5, 55.5, 56.5, 57.5, 59.5, 61.5)
+GOAL_LINES = (4.5, 5.5, 6.5, 7.5)
+
+
+def _prefetch(paths, workers=16):
+    paths = list(dict.fromkeys(paths))
+    if not paths:
+        return
+    with ThreadPoolExecutor(max_workers=min(workers, len(paths))) as pool:
+        list(pool.map(_nhl_json, paths))
+
+
+def _league_schedule(season_start):
+    """Load each club schedule in parallel and deduplicate games by NHL game id."""
+    teams = list(TEAM_NICK)
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        schedules = list(pool.map(lambda t: _team_schedule(t, season_start), teams))
+    unique = {}
+    for schedule in schedules:
+        for game in schedule:
+            gid = _game_id(game)
+            if gid and _completed_regular(game):
+                unique[gid] = game
+    return list(unique.values())
+
+
+def _prepare_backtest_targets(team, season_start, game_limit):
+    if team == 'ALL':
+        schedule = _league_schedule(season_start)
+    else:
+        schedule = [g for g in _team_schedule(team, season_start) if _completed_regular(g)]
+    schedule.sort(key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)
+    return schedule[:game_limit]
+
+
+def _prefetch_backtest_histories(targets):
+    """Warm schedule/boxscore/PBP caches so league-wide validation is practical on Render."""
+    needed_schedule = set()
+    target_ids = []
+    for game in targets:
+        home = (game.get('homeTeam') or {}).get('abbrev')
+        away = (game.get('awayTeam') or {}).get('abbrev')
+        date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
+        gid = _game_id(game)
+        if not home or not away or not date or not gid:
+            continue
+        target_ids.append(gid)
+        start = _season_start(date)
+        for t in (home, away):
+            needed_schedule.add((t, start))
+            needed_schedule.add((t, start - 1))
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        list(pool.map(lambda x: _team_schedule(x[0], x[1]), needed_schedule))
+
+    history_ids = set(target_ids)
+    for game in targets:
+        home = (game.get('homeTeam') or {}).get('abbrev')
+        away = (game.get('awayTeam') or {}).get('abbrev')
+        date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
+        if not home or not away or not date:
+            continue
+        for t in (home, away):
+            for old in _history_games_before(t, date, 30):
+                gid = _game_id(old)
+                if gid:
+                    history_ids.add(gid)
+    _prefetch([f'/gamecenter/{gid}/boxscore' for gid in history_ids], workers=18)
+    _prefetch([f'/gamecenter/{gid}/play-by-play' for gid in target_ids], workers=18)
+
+
+def _record_line(bucket, expected, actual, line, max_n=135):
+    p_over = _over(_poisson(expected, max_n), line)
+    choose_over = p_over >= .5
+    side = 'over' if choose_over else 'under'
+    actual_side = 'over' if actual > line else 'under'
+    conf = p_over if choose_over else 1 - p_over
+    _add_prediction(bucket, conf, side == actual_side, side=side, actual=actual_side)
 
 
 def run_backtest(team, season_start, game_limit=10):
     started = time.time()
-    schedule = [g for g in _team_schedule(team, season_start) if _completed_regular(g)]
-    schedule.sort(key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)
-    targets = schedule[:game_limit]
+    targets = _prepare_backtest_targets(team, season_start, game_limit)
+    # Preloading is the key difference in 0.11: repeated historical games are fetched once and reused.
+    _prefetch_backtest_histories(targets)
+
     markets = {'h2h': [], 'team': [], 'total': [], 'goals': [], 'winner': []}
+    line_buckets = {
+        'team': {line: [] for line in TEAM_SHOT_LINES},
+        'total': {line: [] for line in TOTAL_SHOT_LINES},
+        'goals': {line: [] for line in GOAL_LINES},
+    }
     game_rows = []
     skipped = 0
     for game in targets:
@@ -405,6 +507,7 @@ def run_backtest(team, season_start, game_limit=10):
         except (TypeError, ValueError):
             skipped += 1
             continue
+
         sh = _poisson(prediction['home_shots'])
         sa = _poisson(prediction['away_shots'])
         ph, pt, pa = _h2h(sh, sa)
@@ -413,23 +516,18 @@ def run_backtest(team, season_start, game_limit=10):
         h2h_ok = hs > aas if pick_home else aas > hs
         _add_prediction(markets['h2h'], h2h_conf, h2h_ok)
 
-        # Reference team-shots line: 27.5. Each game contributes one home and one away decision.
-        for expected, actual in ((prediction['home_shots'], hs), (prediction['away_shots'], aas)):
-            p_over = _over(_poisson(expected), 27.5)
-            choose_over = p_over >= .5
-            conf = p_over if choose_over else 1 - p_over
-            ok = actual > 27.5 if choose_over else actual < 27.5
-            _add_prediction(markets['team'], conf, ok)
+        for line in TEAM_SHOT_LINES:
+            _record_line(line_buckets['team'][line], prediction['home_shots'], hs, line)
+            _record_line(line_buckets['team'][line], prediction['away_shots'], aas, line)
+        for line in TOTAL_SHOT_LINES:
+            _record_line(line_buckets['total'][line], prediction['home_shots'] + prediction['away_shots'], hs + aas, line)
+        for line in GOAL_LINES:
+            _record_line(line_buckets['goals'][line], prediction['home_goals'] + prediction['away_goals'], hg + ag, line, 55)
 
-        p_total_over = _over(_poisson(prediction['home_shots'] + prediction['away_shots']), 56.5)
-        total_over = p_total_over >= .5
-        _add_prediction(markets['total'], p_total_over if total_over else 1 - p_total_over,
-                        (hs + aas > 56.5) if total_over else (hs + aas < 56.5))
-
-        p_goals_over = _over(_poisson(prediction['home_goals'] + prediction['away_goals'], 55), 5.5)
-        goals_over = p_goals_over >= .5
-        _add_prediction(markets['goals'], p_goals_over if goals_over else 1 - p_goals_over,
-                        (hg + ag > 5.5) if goals_over else (hg + ag < 5.5))
+        # Keep the familiar reference lines in the main market summary.
+        markets['team'].extend(line_buckets['team'][27.5][-2:])
+        markets['total'].append(line_buckets['total'][56.5][-1])
+        markets['goals'].append(line_buckets['goals'][5.5][-1])
 
         gh = _poisson(prediction['home_goals'], 45)
         ga = _poisson(prediction['away_goals'], 45)
@@ -457,8 +555,14 @@ def run_backtest(team, season_start, game_limit=10):
         'goals': _metric_summary(markets['goals'], 'Góly ±', 'referenční hranice 5,5'),
         'winner': _metric_summary(markets['winner'], 'Vítěz 1/X/2', 'výsledek po 60 minutách'),
     }
+    line_results = {
+        key: [dict(_metric_summary(bucket, f'{line:g}', f'hranice {line:g}'), line=line)
+              for line, bucket in values.items()]
+        for key, values in line_buckets.items()
+    }
     return {
         'team': team,
+        'scope': 'league' if team == 'ALL' else 'team',
         'season': _season_id(season_start),
         'requested_games': game_limit,
         'evaluated_games': len(game_rows),
@@ -466,8 +570,9 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'model': 'Auto forma 55/25/20 + 20% korekce doma/venku při min. 5 zápasech',
         'markets': summaries,
+        'lines': line_results,
         'games': game_rows,
-        'warning': 'Backtest nepoužívá historické kurzy sázkových kanceláří, proto nepočítá historické EV ani ROI.',
+        'warning': 'Backtest nepoužívá historické kurzy sázkových kanceláří, proto nepočítá historické EV ani ROI. Výsledky hranic měří pouze správnost směru over/under proti uvedené čáře.',
     }
 
 class Handler(SimpleHTTPRequestHandler):
@@ -488,7 +593,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.10', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.11', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -509,14 +614,14 @@ class Handler(SimpleHTTPRequestHandler):
             games = int(query.get('games', ['10'])[0])
         except ValueError:
             games = 10
-        if team not in TEAM_NICK:
+        if team != 'ALL' and team not in TEAM_NICK:
             return self.respond(400, {'error': 'Neplatný tým pro backtest'})
         if not re.fullmatch(r'20\d{6}', raw_season):
             return self.respond(400, {'error': 'Neplatná sezóna'})
         start = int(raw_season[:4])
         if raw_season != _season_id(start):
             return self.respond(400, {'error': 'Sezóna musí mít tvar 20252026'})
-        games = max(5, min(20, games))
+        games = max(5, min(100 if team == 'ALL' else 40, games))
         try:
             result = run_backtest(team, start, games)
             return self.respond(200, result, cache='no-store')
