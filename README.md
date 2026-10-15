@@ -1,11 +1,19 @@
-# NHL Team Shots Analyzer 0.8
+# NHL Team Shots Analyzer 0.9
 
-Verze 0.8 mění hlavně **strukturu rozhraní** podle schváleného dashboardového návrhu: nahoře kompaktní výběr zápasu, pod ním dvousloupcový analytický dashboard s kartou zápasu, formou, pravděpodobnostmi, ručním kurzem/EV, grafem a doplňkovými faktory.
+Verze 0.9 navazuje na dashboard 0.8 a přidává automatické načítání **oficiálních denních projektovaných sestav z NHL.com**.
 
-Funkce zůstávají: všech pět trhů, 30zápasová automatická forma, domácí/venkovní korekce, konkrétní zápas z rozpisu, odpočinek/back-to-back a orientační cestování, ruční scénář změny střel/gólů a deník Moje tipy s lokálním uložením a automatickým vyhodnocením dostupných trhů z NHL dat.
+## Nové ve 0.9
+- server načítá stabilní stránku NHL.com „Projected lineups, starting goalies for today“;
+- pro vybrané dva týmy zobrazuje 4 útočné formace, 3 obranné páry, brankáře, hráče mimo sestavu a zranění, pokud jsou ve zdroji uvedené;
+- zobrazuje datum zdroje a nepoužije dnešní článek pro zápas s jiným datem;
+- při nedostupnosti NHL.com analýza dál funguje bez sestav;
+- načtená sestava je viditelně označena jako **projektovaná** a **nezapočítaná do numerického modelu**.
 
-## Omezení
-Sestavy, zranění a potvrzený brankář nejsou automaticky strojově načítány ani zahrnuty do základního modelu. Cestování a odpočinek jsou zobrazené, ale zatím automaticky nemění pravděpodobnosti. Model není historicky validován a není sázkovým doporučením.
+## Proč sestavy zatím nemění pravděpodobnost
+Automaticky přidat například „-2 střely za absenci hvězdy“ by vytvořilo falešnou přesnost. Dalším krokem má být historický backtest, který změří dopad absence klíčových hráčů, změny role, brankáře, odpočinku a cestování. Teprve potom je vhodné přidat datově podložené korekce.
 
 ## Nasazení
-Nahraj `index.html`, `server.py` a `README.md` do kořene stejného GitHub repozitáře. Render může dál používat `python server.py`.
+Nahraj `index.html`, `server.py` a `README.md` do kořene stejného GitHub repozitáře. Render používá `python server.py`.
+
+## Omezení
+NHL.com lineup projections jsou redakční denní projekce, nikoli oficiální potvrzená soupiska pro každý budoucí zápas. Struktura stránky NHL.com se může změnit; při chybě parseru aplikace sestavy raději nezobrazí, než aby si je domýšlela. Základní model zatím není historicky kalibrovaný ani validovaný a nejde o sázkové doporučení.
