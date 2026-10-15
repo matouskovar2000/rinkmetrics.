@@ -1,8 +1,11 @@
-"""NHL Team Shots Analyzer 0.9 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.10 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
 import time
+import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
@@ -24,6 +27,9 @@ TEAM_NICK = {
     'WSH':'CAPITALS','WPG':'JETS'
 }
 _lineup_cache = {'at': 0.0, 'data': None}
+_nhl_cache = {}
+_nhl_cache_lock = threading.Lock()
+
 
 class TextExtractor(HTMLParser):
     BLOCK = {'p','div','section','article','main','header','footer','li','h1','h2','h3','h4','br','tr'}
@@ -131,7 +137,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.9',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.10',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -148,6 +154,322 @@ def fetch_lineups(force=False):
     _lineup_cache.update(at=now, data=data)
     return data
 
+
+def _nhl_json(path, ttl=21600):
+    """Cached JSON reader for NHL API. Historical responses are stable enough for long cache windows."""
+    now = time.time()
+    with _nhl_cache_lock:
+        cached = _nhl_cache.get(path)
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+    req = Request(
+        'https://api-web.nhle.com/v1' + path,
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.10', 'Accept': 'application/json'},
+    )
+    with urlopen(req, timeout=18) as response:
+        data = json.loads(response.read(3_000_000).decode('utf-8'))
+    with _nhl_cache_lock:
+        _nhl_cache[path] = (now, data)
+    return data
+
+
+def _games_from_schedule(data):
+    games = list(data.get('games') or [])
+    for day in data.get('gameWeek') or []:
+        games.extend(day.get('games') or [])
+    return games
+
+
+def _season_start(date_value):
+    if isinstance(date_value, str):
+        d = datetime.strptime(date_value[:10], '%Y-%m-%d')
+    else:
+        d = date_value
+    return d.year - 1 if d.month < 8 else d.year
+
+
+def _season_id(start_year):
+    return f'{start_year}{start_year + 1}'
+
+
+def _team_schedule(team, start_year):
+    return _games_from_schedule(_nhl_json(f'/club-schedule-season/{team}/{_season_id(start_year)}'))
+
+
+def _completed_regular(game):
+    return game.get('gameType') == 2 and game.get('gameState') in ('OFF', 'FINAL') and (game.get('id') or game.get('gameId'))
+
+
+def _game_id(game):
+    return game.get('id') or game.get('gameId')
+
+
+def _box_row(game, team):
+    game_id = _game_id(game)
+    box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
+    home = (box.get('homeTeam') or {}).get('abbrev') == team
+    own = box.get('homeTeam') if home else box.get('awayTeam')
+    opp = box.get('awayTeam') if home else box.get('homeTeam')
+    if not own or not opp:
+        return None
+    vals = [own.get('sog'), opp.get('sog'), own.get('score'), opp.get('score')]
+    try:
+        shots, allowed, goals, ga = [float(x) for x in vals]
+    except (TypeError, ValueError):
+        return None
+    return {
+        'date': game.get('gameDate') or (game.get('startTimeUTC') or '')[:10],
+        'opp': opp.get('abbrev'),
+        'home': home,
+        'shots': shots,
+        'allowed': allowed,
+        'goals': goals,
+        'ga': ga,
+        'gameId': game_id,
+    }
+
+
+def _history_before(team, game_date, n=30):
+    start = _season_start(game_date)
+    games = []
+    for year in (start, start - 1):
+        games.extend(_team_schedule(team, year))
+    unique = {}
+    for game in games:
+        gid = _game_id(game)
+        date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
+        if gid and _completed_regular(game) and date and date < game_date:
+            unique[gid] = game
+    selected = sorted(
+        unique.values(),
+        key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '',
+        reverse=True,
+    )[:n]
+    if not selected:
+        return []
+    workers = min(8, len(selected))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        rows = list(pool.map(lambda g: _box_row(g, team), selected))
+    return [r for r in rows if r]
+
+
+def _avg(rows, key):
+    return sum(r[key] for r in rows) / len(rows)
+
+
+def _weighted(rows, key):
+    a = _avg(rows, key)
+    b = _avg(rows[:min(10, len(rows))], key)
+    c = _avg(rows[:min(5, len(rows))], key)
+    return .55 * a + .25 * b + .20 * c
+
+
+def _venue_mean(rows, key, home):
+    subset = [r for r in rows if r['home'] is home]
+    return _avg(subset, key) if len(subset) >= 5 else None
+
+
+def _blend(base, venue):
+    return base if venue is None else .8 * base + .2 * venue
+
+
+def _poisson(lam, max_n=135):
+    p = math.exp(-lam)
+    arr = [p]
+    for i in range(1, max_n + 1):
+        p *= lam / i
+        arr.append(p)
+    return arr
+
+
+def _h2h(a, b):
+    win_a = tie = cumulative_b = 0.0
+    for i, p_a in enumerate(a):
+        win_a += p_a * cumulative_b
+        p_b = b[i] if i < len(b) else 0.0
+        tie += p_a * p_b
+        cumulative_b += p_b
+    return win_a, tie, max(0.0, 1.0 - win_a - tie)
+
+
+def _over(dist, line):
+    return sum(p for i, p in enumerate(dist) if i > line)
+
+
+def _predict_game(home, away, game_date):
+    rh = _history_before(home, game_date, 30)
+    ra = _history_before(away, game_date, 30)
+    if len(rh) < 10 or len(ra) < 10:
+        return None
+    eh = (
+        _blend(_weighted(rh, 'shots'), _venue_mean(rh, 'shots', True)) +
+        _blend(_weighted(ra, 'allowed'), _venue_mean(ra, 'allowed', False))
+    ) / 2
+    ea = (
+        _blend(_weighted(ra, 'shots'), _venue_mean(ra, 'shots', False)) +
+        _blend(_weighted(rh, 'allowed'), _venue_mean(rh, 'allowed', True))
+    ) / 2
+    gh = (
+        _blend(_weighted(rh, 'goals'), _venue_mean(rh, 'goals', True)) +
+        _blend(_weighted(ra, 'ga'), _venue_mean(ra, 'ga', False))
+    ) / 2
+    ga = (
+        _blend(_weighted(ra, 'goals'), _venue_mean(ra, 'goals', False)) +
+        _blend(_weighted(rh, 'ga'), _venue_mean(rh, 'ga', True))
+    ) / 2
+    return {'home_shots': eh, 'away_shots': ea, 'home_goals': gh, 'away_goals': ga,
+            'home_history': len(rh), 'away_history': len(ra)}
+
+
+def _regulation_result(game_id):
+    data = _nhl_json(f'/gamecenter/{game_id}/play-by-play')
+    home_id = (data.get('homeTeam') or {}).get('id')
+    away_id = (data.get('awayTeam') or {}).get('id')
+    plays = data.get('plays') or []
+    if not home_id or not away_id:
+        return None
+    home = away = 0
+    for play in plays:
+        period = ((play.get('periodDescriptor') or {}).get('number'))
+        if play.get('typeDescKey') != 'goal' or not isinstance(period, int) or period < 1 or period > 3:
+            continue
+        owner = (play.get('details') or {}).get('eventOwnerTeamId')
+        if owner == home_id:
+            home += 1
+        elif owner == away_id:
+            away += 1
+    return 'home' if home > away else 'away' if away > home else 'draw'
+
+
+def _add_prediction(bucket, probability, correct):
+    bucket.append({'p': max(0.0, min(1.0, probability)), 'y': 1 if correct else 0})
+
+
+def _calibration(predictions):
+    bins = [(0, .4, '0–39 %'), (.4, .5, '40–49 %'), (.5, .6, '50–59 %'),
+            (.6, .7, '60–69 %'), (.7, .8, '70–79 %'), (.8, 1.000001, '80–100 %')]
+    result = []
+    for lo, hi, label in bins:
+        rows = [x for x in predictions if lo <= x['p'] < hi]
+        if rows:
+            result.append({
+                'label': label,
+                'n': len(rows),
+                'avg_probability': sum(x['p'] for x in rows) / len(rows),
+                'actual_rate': sum(x['y'] for x in rows) / len(rows),
+            })
+    return result
+
+
+def _metric_summary(predictions, label, reference=None):
+    if not predictions:
+        return {'label': label, 'n': 0, 'accuracy': None, 'avg_probability': None, 'brier': None,
+                'reference': reference, 'calibration': []}
+    n = len(predictions)
+    return {
+        'label': label,
+        'n': n,
+        'accuracy': sum(x['y'] for x in predictions) / n,
+        'avg_probability': sum(x['p'] for x in predictions) / n,
+        'brier': sum((x['p'] - x['y']) ** 2 for x in predictions) / n,
+        'reference': reference,
+        'calibration': _calibration(predictions),
+    }
+
+
+def run_backtest(team, season_start, game_limit=10):
+    started = time.time()
+    schedule = [g for g in _team_schedule(team, season_start) if _completed_regular(g)]
+    schedule.sort(key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)
+    targets = schedule[:game_limit]
+    markets = {'h2h': [], 'team': [], 'total': [], 'goals': [], 'winner': []}
+    game_rows = []
+    skipped = 0
+    for game in targets:
+        home = (game.get('homeTeam') or {}).get('abbrev')
+        away = (game.get('awayTeam') or {}).get('abbrev')
+        date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
+        game_id = _game_id(game)
+        if not home or not away or not date or not game_id:
+            skipped += 1
+            continue
+        prediction = _predict_game(home, away, date)
+        if not prediction:
+            skipped += 1
+            continue
+        box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
+        ht, at = box.get('homeTeam') or {}, box.get('awayTeam') or {}
+        try:
+            hs, aas = float(ht.get('sog')), float(at.get('sog'))
+            hg, ag = float(ht.get('score')), float(at.get('score'))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        sh = _poisson(prediction['home_shots'])
+        sa = _poisson(prediction['away_shots'])
+        ph, pt, pa = _h2h(sh, sa)
+        pick_home = ph >= pa
+        h2h_conf = ph if pick_home else pa
+        h2h_ok = hs > aas if pick_home else aas > hs
+        _add_prediction(markets['h2h'], h2h_conf, h2h_ok)
+
+        # Reference team-shots line: 27.5. Each game contributes one home and one away decision.
+        for expected, actual in ((prediction['home_shots'], hs), (prediction['away_shots'], aas)):
+            p_over = _over(_poisson(expected), 27.5)
+            choose_over = p_over >= .5
+            conf = p_over if choose_over else 1 - p_over
+            ok = actual > 27.5 if choose_over else actual < 27.5
+            _add_prediction(markets['team'], conf, ok)
+
+        p_total_over = _over(_poisson(prediction['home_shots'] + prediction['away_shots']), 56.5)
+        total_over = p_total_over >= .5
+        _add_prediction(markets['total'], p_total_over if total_over else 1 - p_total_over,
+                        (hs + aas > 56.5) if total_over else (hs + aas < 56.5))
+
+        p_goals_over = _over(_poisson(prediction['home_goals'] + prediction['away_goals'], 55), 5.5)
+        goals_over = p_goals_over >= .5
+        _add_prediction(markets['goals'], p_goals_over if goals_over else 1 - p_goals_over,
+                        (hg + ag > 5.5) if goals_over else (hg + ag < 5.5))
+
+        gh = _poisson(prediction['home_goals'], 45)
+        ga = _poisson(prediction['away_goals'], 45)
+        wh, wt, wa = _h2h(gh, ga)
+        probs = {'home': wh, 'draw': wt, 'away': wa}
+        pick = max(probs, key=probs.get)
+        regulation = _regulation_result(game_id)
+        if regulation:
+            _add_prediction(markets['winner'], probs[pick], pick == regulation)
+
+        game_rows.append({
+            'date': date,
+            'matchup': f'{away} @ {home}',
+            'actual_shots': f'{int(hs)}:{int(aas)}',
+            'expected_shots': f"{prediction['home_shots']:.1f}:{prediction['away_shots']:.1f}",
+            'h2h_pick': home if pick_home else away,
+            'h2h_probability': h2h_conf,
+            'h2h_correct': bool(h2h_ok),
+        })
+
+    summaries = {
+        'h2h': _metric_summary(markets['h2h'], 'Více střel', '3cestný trh; shoda = prohra týmového výběru'),
+        'team': _metric_summary(markets['team'], 'Střely týmu ±', 'referenční hranice 27,5'),
+        'total': _metric_summary(markets['total'], 'Celkové střely ±', 'referenční hranice 56,5'),
+        'goals': _metric_summary(markets['goals'], 'Góly ±', 'referenční hranice 5,5'),
+        'winner': _metric_summary(markets['winner'], 'Vítěz 1/X/2', 'výsledek po 60 minutách'),
+    }
+    return {
+        'team': team,
+        'season': _season_id(season_start),
+        'requested_games': game_limit,
+        'evaluated_games': len(game_rows),
+        'skipped_games': skipped,
+        'elapsed_seconds': round(time.time() - started, 1),
+        'model': 'Auto forma 55/25/20 + 20% korekce doma/venku při min. 5 zápasech',
+        'markets': summaries,
+        'games': game_rows,
+        'warning': 'Backtest nepoužívá historické kurzy sázkových kanceláří, proto nepočítá historické EV ani ROI.',
+    }
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -156,6 +478,8 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == '/lineups':
             return self.handle_lineups(parse_qs(parsed.query))
+        if parsed.path == '/backtest':
+            return self.handle_backtest(parse_qs(parsed.query))
         if not parsed.path.startswith('/api/'):
             return super().do_GET()
         path = parsed.path[4:]
@@ -164,7 +488,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.9', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.10', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -177,6 +501,31 @@ class Handler(SimpleHTTPRequestHandler):
             self.respond(502, {'error': f'NHL API HTTP {exc.code}'})
         except (URLError, TimeoutError):
             self.respond(502, {'error': 'NHL API není dostupné'})
+
+    def handle_backtest(self, query):
+        team = (query.get('team', ['FLA'])[0] or 'FLA').upper()
+        raw_season = query.get('season', ['20252026'])[0]
+        try:
+            games = int(query.get('games', ['10'])[0])
+        except ValueError:
+            games = 10
+        if team not in TEAM_NICK:
+            return self.respond(400, {'error': 'Neplatný tým pro backtest'})
+        if not re.fullmatch(r'20\d{6}', raw_season):
+            return self.respond(400, {'error': 'Neplatná sezóna'})
+        start = int(raw_season[:4])
+        if raw_season != _season_id(start):
+            return self.respond(400, {'error': 'Sezóna musí mít tvar 20252026'})
+        games = max(5, min(20, games))
+        try:
+            result = run_backtest(team, start, games)
+            return self.respond(200, result, cache='no-store')
+        except HTTPError as exc:
+            return self.respond(502, {'error': f'NHL API při backtestu odpovědělo HTTP {exc.code}'})
+        except (URLError, TimeoutError):
+            return self.respond(502, {'error': 'NHL API není při backtestu dostupné'})
+        except Exception as exc:
+            return self.respond(500, {'error': 'Backtest se nepodařilo dokončit', 'detail': str(exc)[:180]})
 
     def handle_lineups(self, query):
         requested = []
