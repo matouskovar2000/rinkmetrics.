@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.13 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.14 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -51,6 +51,8 @@ def _clip(value, lo, hi):
 _lineup_cache = {'at': 0.0, 'data': None}
 _nhl_cache = {}
 _nhl_cache_lock = threading.Lock()
+_history_cache = {}
+_history_cache_lock = threading.Lock()
 
 
 class TextExtractor(HTMLParser):
@@ -186,7 +188,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.13', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.14', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -274,13 +276,21 @@ def _history_games_before(team, game_date, n=30):
 
 
 def _history_before(team, game_date, n=30):
+    key = (team, game_date, int(n))
+    with _history_cache_lock:
+        cached = _history_cache.get(key)
+    if cached is not None:
+        return cached
     selected = _history_games_before(team, game_date, n)
     if not selected:
-        return []
-    workers = min(8, len(selected))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        rows = list(pool.map(lambda g: _box_row(g, team), selected))
-    return [r for r in rows if r]
+        rows = []
+    else:
+        workers = min(8, len(selected))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            rows = [r for r in pool.map(lambda g: _box_row(g, team), selected) if r]
+    with _history_cache_lock:
+        _history_cache[key] = rows
+    return rows
 
 
 def _avg(rows, key):
@@ -780,6 +790,223 @@ def _line_summaries(line_buckets):
     }
 
 
+def _blend_candidate_prediction(predictions, weights):
+    """Conservative Model 3: start from Model 1 and add shrunk deltas from
+    independently tested factors. The weights are learned only on older games.
+    """
+    base = predictions['v1']
+    rec = predictions['recency']
+    opp = predictions['opponent']
+    ctx = predictions['context']
+    wr, wo, wc = weights['recency'], weights['opponent'], weights['context']
+
+    def mix(key, lo, hi):
+        value = (base[key]
+                 + wr * (rec[key] - base[key])
+                 + wo * (opp[key] - base[key])
+                 + wc * (ctx[key] - base[key]))
+        return _clip(value, lo, hi)
+
+    return {
+        'home_shots': mix('home_shots', 10.0, 50.0),
+        'away_shots': mix('away_shots', 10.0, 50.0),
+        'home_goals': mix('home_goals', 0.2, 8.0),
+        'away_goals': mix('away_goals', 0.2, 8.0),
+        'home_history': base.get('home_history'),
+        'away_history': base.get('away_history'),
+    }
+
+
+def _line_pick_row(expected, actual, line, max_n=135):
+    p_over = _over(_poisson(expected, max_n), line)
+    choose_over = p_over >= .5
+    conf = p_over if choose_over else 1.0 - p_over
+    actual_over = actual > line
+    return {'p': conf, 'y': 1 if choose_over == actual_over else 0,
+            'side': 'over' if choose_over else 'under',
+            'actual': 'over' if actual_over else 'under'}
+
+
+def _reference_predictions(prediction, row):
+    """Reference-market prediction rows used for tuning the global weights.
+    These are intentionally the same reference markets used in the dashboard.
+    """
+    hs, aas = row['hs'], row['aas']
+    hg, ag = row['hg'], row['ag']
+    regulation = row.get('regulation')
+    out = {'h2h': [], 'team': [], 'total': [], 'goals': [], 'winner': []}
+
+    sh = _poisson(prediction['home_shots'])
+    sa = _poisson(prediction['away_shots'])
+    ph, pt, pa = _h2h(sh, sa)
+    pick_home = ph >= pa
+    out['h2h'].append({'p': ph if pick_home else pa,
+                       'y': 1 if (hs > aas if pick_home else aas > hs) else 0})
+
+    out['team'].append(_line_pick_row(prediction['home_shots'], hs, 27.5))
+    out['team'].append(_line_pick_row(prediction['away_shots'], aas, 27.5))
+    out['total'].append(_line_pick_row(prediction['home_shots'] + prediction['away_shots'], hs + aas, 56.5))
+    out['goals'].append(_line_pick_row(prediction['home_goals'] + prediction['away_goals'], hg + ag, 5.5, 55))
+
+    if regulation:
+        gh = _poisson(prediction['home_goals'], 45)
+        ga = _poisson(prediction['away_goals'], 45)
+        wh, wt, wa = _h2h(gh, ga)
+        probs = {'home': wh, 'draw': wt, 'away': wa}
+        pick = max(probs, key=probs.get)
+        out['winner'].append({'p': probs[pick], 'y': 1 if pick == regulation else 0})
+    return out
+
+
+def _collect_reference(rows, weights=None, use_v1=False):
+    out = {'h2h': [], 'team': [], 'total': [], 'goals': [], 'winner': []}
+    for row in rows:
+        prediction = row['predictions']['v1'] if use_v1 else _blend_candidate_prediction(row['predictions'], weights)
+        one = _reference_predictions(prediction, row)
+        for market in out:
+            out[market].extend(one[market])
+    return out
+
+
+def _market_brier(predictions):
+    if not predictions:
+        return None
+    return sum((x['p'] - x['y']) ** 2 for x in predictions) / len(predictions)
+
+
+def _weight_objective(rows, weights):
+    markets = _collect_reference(rows, weights=weights)
+    briers = [_market_brier(markets[k]) for k in ('h2h', 'team', 'total', 'goals', 'winner')]
+    briers = [x for x in briers if x is not None]
+    if not briers:
+        return 999.0, {}
+    # Small regularisation keeps the search conservative when two settings are similar.
+    penalty = 0.0005 * sum(float(weights[k]) ** 2 for k in ('recency', 'opponent', 'context'))
+    return sum(briers) / len(briers) + penalty, {
+        k: _market_brier(markets[k]) for k in markets
+    }
+
+
+def _fit_affine(train):
+    if len(train) < 12:
+        return None
+    mean_p = sum(x['p'] for x in train) / len(train)
+    mean_y = sum(x['y'] for x in train) / len(train)
+    best = None
+    for i in range(31):
+        slope = i / 20.0
+        intercept = mean_y - slope * mean_p
+        vals = [_clip(intercept + slope * x['p'], .01, .99) for x in train]
+        brier = sum((p - x['y']) ** 2 for p, x in zip(vals, train)) / len(train)
+        if best is None or brier < best[0]:
+            best = (brier, slope, intercept)
+    return {'slope': best[1], 'intercept': best[2], 'train_brier': best[0]}
+
+
+def _heldout_calibration(train_markets, test_markets):
+    result = {}
+    for market in ('h2h', 'team', 'total', 'goals', 'winner'):
+        train, test = train_markets[market], test_markets[market]
+        fit = _fit_affine(train)
+        if not fit or len(test) < 8:
+            result[market] = {'available': False, 'reason': 'Málo dat v train/test části'}
+            continue
+        raw = [x['p'] for x in test]
+        calibrated = [_clip(fit['intercept'] + fit['slope'] * p, .01, .99) for p in raw]
+        raw_brier = sum((p - x['y']) ** 2 for p, x in zip(raw, test)) / len(test)
+        cal_brier = sum((p - x['y']) ** 2 for p, x in zip(calibrated, test)) / len(test)
+        result[market] = {
+            'available': True, 'train_n': len(train), 'test_n': len(test),
+            'slope': fit['slope'], 'intercept': fit['intercept'],
+            'raw_brier': raw_brier, 'calibrated_brier': cal_brier,
+            'brier_gain': raw_brier - cal_brier,
+            'raw_avg_probability': sum(raw) / len(raw),
+            'calibrated_avg_probability': sum(calibrated) / len(calibrated),
+            'actual_rate': sum(x['y'] for x in test) / len(test),
+        }
+    return result
+
+
+def _model3_train_test(tuning_rows, empty_markets, empty_lines):
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 50:
+        return {'available': False, 'reason': 'Model 3 potřebuje alespoň 50 vyhodnocených zápasů.'}
+    split = max(30, int(n * .60))
+    split = min(split, n - 20)
+    train, test = ordered[:split], ordered[split:]
+
+    best = None
+    recency_grid = (0.0, .25, .50, .75, 1.0)
+    opponent_grid = (0.0, .10, .20, .30)
+    context_grid = (0.0, .10, .20, .30)
+    tested = 0
+    for wr in recency_grid:
+        for wo in opponent_grid:
+            for wc in context_grid:
+                weights = {'recency': wr, 'opponent': wo, 'context': wc}
+                objective, by_market = _weight_objective(train, weights)
+                tested += 1
+                if best is None or objective < best['objective']:
+                    best = {'weights': weights, 'objective': objective, 'train_briers': by_market}
+
+    weights = best['weights']
+    train_m3 = _collect_reference(train, weights=weights)
+    test_m3 = _collect_reference(test, weights=weights)
+    test_v1 = _collect_reference(test, use_v1=True)
+    calibration = _heldout_calibration(train_m3, test_m3)
+
+    # Full line tables on the holdout only. This prevents tuned weights from being
+    # judged on the same outcomes that selected them.
+    v1_markets, m3_markets = empty_markets(), empty_markets()
+    v1_lines, m3_lines = empty_lines(), empty_lines()
+    rows_out = []
+    for row in test:
+        p1 = row['predictions']['v1']
+        p3 = _blend_candidate_prediction(row['predictions'], weights)
+        e1 = _evaluate_model_prediction(p1, row['hs'], row['aas'], row['hg'], row['ag'], row['regulation'], v1_markets, v1_lines)
+        e3 = _evaluate_model_prediction(p3, row['hs'], row['aas'], row['hg'], row['ag'], row['regulation'], m3_markets, m3_lines)
+        rows_out.append({
+            'date': row['date'], 'matchup': row['matchup'],
+            'actual_shots': f"{int(row['hs'])}:{int(row['aas'])}",
+            'expected_shots_v1': f"{p1['home_shots']:.1f}:{p1['away_shots']:.1f}",
+            'expected_shots_m3': f"{p3['home_shots']:.1f}:{p3['away_shots']:.1f}",
+            'h2h_pick_v1': row['home'] if e1['pick_home'] else row['away'],
+            'h2h_probability_v1': e1['h2h_conf'], 'h2h_correct_v1': bool(e1['h2h_ok']),
+            'h2h_pick_m3': row['home'] if e3['pick_home'] else row['away'],
+            'h2h_probability_m3': e3['h2h_conf'], 'h2h_correct_m3': bool(e3['h2h_ok']),
+        })
+
+    v1_summary, m3_summary = _summaries(v1_markets), _summaries(m3_markets)
+    holdout_compare = {}
+    for market in ('h2h', 'team', 'total', 'goals', 'winner'):
+        a, b = v1_summary[market], m3_summary[market]
+        holdout_compare[market] = {
+            'label': b['label'], 'n': min(a['n'], b['n']),
+            'accuracy_v1': a['accuracy'], 'accuracy_m3': b['accuracy'],
+            'accuracy_delta': None if a['accuracy'] is None or b['accuracy'] is None else b['accuracy'] - a['accuracy'],
+            'brier_v1': a['brier'], 'brier_m3': b['brier'],
+            'brier_gain': None if a['brier'] is None or b['brier'] is None else a['brier'] - b['brier'],
+        }
+
+    train_dates = [x['date'] for x in train]
+    test_dates = [x['date'] for x in test]
+    return {
+        'available': True, 'grid_tested': tested, 'weights': weights,
+        'objective': best['objective'], 'train_briers': best['train_briers'],
+        'train_n': len(train), 'test_n': len(test),
+        'train_from': min(train_dates), 'train_to': max(train_dates),
+        'test_from': min(test_dates), 'test_to': max(test_dates),
+        'holdout_compare': holdout_compare,
+        'calibration': calibration,
+        'holdout_models': {
+            'v1': {'markets': v1_summary, 'lines': _line_summaries(v1_lines)},
+            'm3': {'markets': m3_summary, 'lines': _line_summaries(m3_lines)},
+        },
+        'holdout_games': list(reversed(rows_out)),
+    }
+
+
 def run_backtest(team, season_start, game_limit=10):
     started = time.time()
     targets = _prepare_backtest_targets(team, season_start, game_limit)
@@ -803,13 +1030,14 @@ def run_backtest(team, season_start, game_limit=10):
         'full': ('Full kandidát', 'Rychlejší forma + síla soupeře + B2B/odpočinek/cestování', _predict_game_v2),
     }
     stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
-    game_rows, factor_rows = [], []
+    game_rows, factor_rows, tuning_rows = [], [], []
     skipped = 0
 
     for game in targets:
         home = (game.get('homeTeam') or {}).get('abbrev')
         away = (game.get('awayTeam') or {}).get('abbrev')
         date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
+        start_time = game.get('startTimeUTC') or (date + 'T00:00:00Z' if date else '')
         game_id = _game_id(game)
         if not home or not away or not date or not game_id:
             skipped += 1
@@ -837,6 +1065,11 @@ def run_backtest(team, season_start, game_limit=10):
                 prediction, hs, aas, hg, ag, regulation, st['markets'], st['lines']
             )
 
+        tuning_rows.append({
+            'date': date, 'sort_key': start_time, 'home': home, 'away': away,
+            'matchup': f'{away} @ {home}', 'hs': hs, 'aas': aas, 'hg': hg, 'ag': ag,
+            'regulation': regulation, 'predictions': predictions,
+        })
         f = predictions['full'].get('factors') or {}
         factor_rows.append(f)
         game_rows.append({
@@ -882,7 +1115,6 @@ def run_backtest(team, season_start, game_limit=10):
             'best_brier_gain': best['brier_gain'] if best else None,
         }
 
-    # Keep a compact Model 1 vs Full comparison for continuity with 0.12.
     comparison = {}
     for market in order:
         a, b = models['v1']['markets'][market], models['full']['markets'][market]
@@ -895,8 +1127,6 @@ def run_backtest(team, season_start, game_limit=10):
             'reference': b['reference'],
         }
 
-    # Calibration is intentionally trained on the older 60% and evaluated on
-    # the newer 40% of this backtest window. It changes confidence, not picks.
     calibration_oos = {
         market: _chronological_calibration(stores['full']['markets'][market])
         for market in order
@@ -914,6 +1144,8 @@ def run_backtest(team, season_start, game_limit=10):
     travel_vals = [float(v) for x in factor_rows for v in (x.get('home_travel_km'), x.get('away_travel_km')) if v is not None]
     factor_summary['avg_travel_km'] = sum(travel_vals)/len(travel_vals) if travel_vals else None
 
+    model3 = _model3_train_test(tuning_rows, empty_markets, empty_lines)
+
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
         'season': _season_id(season_start), 'requested_games': game_limit,
@@ -921,10 +1153,10 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'games': game_rows,
-        'warning': ('0.13 je diagnostická verze: jednotlivé faktory se testují odděleně, aby bylo vidět, co skutečně zlepšuje '
-                    'Brier score. Chronologická kalibrace se učí jen na starší části testovacího okna a hodnotí na novější části; '
-                    'není to ještě finální kalibrátor pro živou Analýzu. Historické bookmakerové kurzy stále nejsou součástí backtestu.'),
+        'model3': model3, 'games': game_rows,
+        'warning': ('0.14 přidává Model 3 s konzervativními vahami. Váhy se hledají pouze na starších 60 % zápasů a finálně se hodnotí '
+                    'na novějších 40 %, které výběr vah neviděl. Kalibrace Modelu 3 se také učí jen na train části. Živá Analýza '
+                    'stále používá Model 1, dokud Model 3 neprokáže stabilní league-wide zlepšení na větším vzorku. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -946,7 +1178,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.13', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.14', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -974,7 +1206,7 @@ class Handler(SimpleHTTPRequestHandler):
         start = int(raw_season[:4])
         if raw_season != _season_id(start):
             return self.respond(400, {'error': 'Sezóna musí mít tvar 20252026'})
-        games = max(5, min(100 if team == 'ALL' else 40, games))
+        games = max(5, min(300 if team == 'ALL' else 60, games))
         try:
             result = run_backtest(team, start, games)
             return self.respond(200, result, cache='no-store')

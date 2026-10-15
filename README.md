@@ -1,24 +1,24 @@
-# NHL Team Shots Analyzer 0.13
+# NHL Team Shots Analyzer 0.14
 
-Verze 0.13 přidává **ablation test** a chronologickou kalibraci. Cílem není přidávat další faktory naslepo, ale přesně změřit, která změna proti Modelu 1 skutečně pomáhá.
+Verze 0.14 přidává **Model 3 Lab**. Cílem není přidat další ručně zvolené koeficienty, ale naučit malé konzervativní váhy na starší části historie a ověřit je na novějších zápasech, které ladění vah nevidělo.
 
-## Nové ve 0.13
-- backtest počítá pět variant nad stejnými předzápasovými daty: **Model 1**, jen rychlejší forma, jen silnější síla soupeře, jen B2B/odpočinek/cestování a Full kandidát;
-- u každého trhu se ukazuje úspěšnost, Brier score a Brier zisk proti Modelu 1;
-- nejlepší varianta daného trhu je zvýrazněná;
-- hranice střel/gólů dál porovnávají Model 1, Full kandidáta a jednoduchou baseline;
-- přidána jednoduchá **chronologická out-of-sample kalibrace**: starších 60 % predikcí slouží k nastavení affine kalibrátoru, novějších 40 % je čistý test;
-- kalibrace mění jen pravděpodobnostní jistotu, nikoli samotný výběr;
-- živá záložka Analýza dál používá Model 1.
+## Co je nové
+- League-wide backtest lze spustit až na **300 posledních zápasech**.
+- Data se chronologicky rozdělí na **60 % train / 40 % holdout**.
+- Model 3 začíná u Modelu 1 a učí tři malé váhy: rychlejší forma, síla soupeře a B2B/odpočinek/cestování.
+- Grid search testuje 80 konzervativních kombinací vah pouze na train části a používá malou regularizační penalizaci proti zbytečně velkým korekcím.
+- Hlavní tabulka Model 1 vs. Model 3 je počítána **jen na novějším holdoutu**.
+- Pro týmové střely, celkové střely a góly se na holdoutu zobrazují i jednotlivé hranice, baseline, Brier score a Brier Skill.
+- Pravděpodobnostní kalibrátor se učí pouze na train části a jeho Brier zisk se měří na holdoutu.
+- Historie předzápasových dat se nově cachuje, aby větší league-wide běhy neopakovaly stejnou práci pro každou variantu modelu.
 
-## Proč ablace
-Výsledek 0.12 ukázal, že Full Model 2 nebyl stabilně lepší. Ablace oddělí vliv recency, síly soupeře a kontextu cestování/odpočinku. Faktor, který nezlepší Brier score v league-wide testu, se nemá automaticky přidávat do hlavního modelu.
+## Jak výsledek číst
+Nejdůležitější je sekce **Model 3 · naučené váhy a nezávislý holdout**. Kladný Brier zisk znamená, že Model 3 má na neviděných novějších zápasech přesnější pravděpodobnosti než Model 1. Vyšší úspěšnost bez lepšího Brier score sama o sobě nestačí.
 
-## Kalibrace
-Kalibrace v 0.13 není trénovaná na stejných výsledcích, na kterých je následně hodnocena. Backtestové predikce se chronologicky rozdělí: starší část nastaví jednoduchý kalibrátor a novější část změří raw vs. kalibrovaný Brier. Je to pořád validační krok, ne finální produkční kalibrátor.
+Váhy z jednoho běhu se zatím nepřenášejí do živé Analýzy. Model 1 zůstává hlavním modelem, dokud Model 3 neukáže stabilní zlepšení na větším league-wide vzorku a ideálně více časových obdobích.
 
-## Nasazení
-Nahraj `index.html`, `server.py` a `README.md` do kořene stejného GitHub repozitáře. Render používá `python server.py`.
+## Doporučený test
+Začni `Celá NHL` + `100` zápasů. Pokud vše funguje, spusť `200` a následně `300`. První velký běh může podle cache a NHL API trvat několik minut.
 
 ## Omezení
-Backtest stále nepoužívá historické bookmakerové kurzy, proto z něj nelze přímo odvozovat historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou číselnou korekcí hlavního modelu.
+Backtest stále nepoužívá historické bookmakerové kurzy, takže z něj nelze přímo odvozovat historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí živého modelu. Model není považován za finálně validovaný a nejde o sázkové doporučení.
