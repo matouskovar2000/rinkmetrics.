@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.12 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.13 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -159,7 +159,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.12',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.13',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -186,7 +186,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.12', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.13', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -406,43 +406,61 @@ def _context_adjustment(rows, key, target, kind):
             'rest': rest_delta, 'travel': travel_delta}
 
 
-def _predict_game_v2(home, away, game_date):
-    """Experimental Model 2.
-    Adds exponential form, additive opponent-strength normalization, and data-derived B2B/travel adjustments.
-    It uses only information available before the target game.
+def _predict_variant(home, away, game_date, *, recency=False, opponent=False, context=False):
+    """Build a pre-game prediction with independently switchable factors.
+
+    This powers the 0.13 ablation test. Every variant sees exactly the same
+    pre-game history; only the requested factor changes.
     """
     rh = _history_before(home, game_date, 30)
     ra = _history_before(away, game_date, 30)
     if len(rh) < 10 or len(ra) < 10:
         return None
 
-    # Dynamic local baselines from both teams' pre-game histories.
-    h_sh, h_al = _exp_weighted(rh, 'shots'), _exp_weighted(rh, 'allowed')
-    a_sh, a_al = _exp_weighted(ra, 'shots'), _exp_weighted(ra, 'allowed')
-    shot_base = (h_sh + h_al + a_sh + a_al) / 4.0
-    h_g, h_ga = _exp_weighted(rh, 'goals'), _exp_weighted(rh, 'ga')
-    a_g, a_ga = _exp_weighted(ra, 'goals'), _exp_weighted(ra, 'ga')
-    goal_base = (h_g + h_ga + a_g + a_ga) / 4.0
+    weight = _exp_weighted if recency else _weighted
+    h_sh, h_al = weight(rh, 'shots'), weight(rh, 'allowed')
+    a_sh, a_al = weight(ra, 'shots'), weight(ra, 'allowed')
+    h_g, h_ga = weight(rh, 'goals'), weight(rh, 'ga')
+    a_g, a_ga = weight(ra, 'goals'), weight(ra, 'ga')
 
-    # Additive attack + opponent-defense model, normalized around the local baseline.
-    eh = h_sh + a_al - shot_base
-    ea = a_sh + h_al - shot_base
-    gh = h_g + a_ga - goal_base
-    ga = a_g + h_ga - goal_base
+    # Apply the same modest venue blend before factor-specific combination.
+    h_sh_v = _blend(h_sh, _venue_mean(rh, 'shots', True))
+    h_al_v = _blend(h_al, _venue_mean(rh, 'allowed', True))
+    a_sh_v = _blend(a_sh, _venue_mean(ra, 'shots', False))
+    a_al_v = _blend(a_al, _venue_mean(ra, 'allowed', False))
+    h_g_v = _blend(h_g, _venue_mean(rh, 'goals', True))
+    h_ga_v = _blend(h_ga, _venue_mean(rh, 'ga', True))
+    a_g_v = _blend(a_g, _venue_mean(ra, 'goals', False))
+    a_ga_v = _blend(a_ga, _venue_mean(ra, 'ga', False))
 
-    # Keep the existing venue information, but only as the same modest 20% blend used by Model 1.
-    eh = _blend(eh, _venue_mean(rh, 'shots', True))
-    ea = _blend(ea, _venue_mean(ra, 'shots', False))
-    gh = _blend(gh, _venue_mean(rh, 'goals', True))
-    ga = _blend(ga, _venue_mean(ra, 'goals', False))
+    if opponent:
+        # Stronger opponent-strength normalization: attack + opponent defense
+        # relative to the four-way local pre-game baseline.
+        shot_base = (h_sh_v + h_al_v + a_sh_v + a_al_v) / 4.0
+        goal_base = (h_g_v + h_ga_v + a_g_v + a_ga_v) / 4.0
+        eh = h_sh_v + a_al_v - shot_base
+        ea = a_sh_v + h_al_v - shot_base
+        gh = h_g_v + a_ga_v - goal_base
+        ga = a_g_v + h_ga_v - goal_base
+    else:
+        shot_base = (h_sh_v + h_al_v + a_sh_v + a_al_v) / 4.0
+        goal_base = (h_g_v + h_ga_v + a_g_v + a_ga_v) / 4.0
+        eh = (h_sh_v + a_al_v) / 2.0
+        ea = (a_sh_v + h_al_v) / 2.0
+        gh = (h_g_v + a_ga_v) / 2.0
+        ga = (a_g_v + h_ga_v) / 2.0
 
     target_venue = home
     ctx_h = _target_context(rh, target_venue, game_date)
     ctx_a = _target_context(ra, target_venue, game_date)
-    adj_hs = _context_adjustment(rh, 'shots', ctx_h, 'shots')
-    adj_as = _context_adjustment(ra, 'shots', ctx_a, 'shots')
-    adj_hg = _context_adjustment(rh, 'goals', ctx_h, 'goals')
-    adj_ag = _context_adjustment(ra, 'goals', ctx_a, 'goals')
+    zero = {'total': 0.0, 'b2b': 0.0, 'rest': 0.0, 'travel': 0.0}
+    if context:
+        adj_hs = _context_adjustment(rh, 'shots', ctx_h, 'shots')
+        adj_as = _context_adjustment(ra, 'shots', ctx_a, 'shots')
+        adj_hg = _context_adjustment(rh, 'goals', ctx_h, 'goals')
+        adj_ag = _context_adjustment(ra, 'goals', ctx_a, 'goals')
+    else:
+        adj_hs = adj_as = adj_hg = adj_ag = zero
 
     eh = _clip(eh + adj_hs['total'], 10.0, 50.0)
     ea = _clip(ea + adj_as['total'], 10.0, 50.0)
@@ -453,12 +471,7 @@ def _predict_game_v2(home, away, game_date):
         'home_shots': eh, 'away_shots': ea, 'home_goals': gh, 'away_goals': ga,
         'home_history': len(rh), 'away_history': len(ra),
         'factors': {
-            'shot_baseline': shot_base,
-            'goal_baseline': goal_base,
-            'home_attack_vs_base': h_sh - shot_base,
-            'away_attack_vs_base': a_sh - shot_base,
-            'home_opp_def_vs_base': a_al - shot_base,
-            'away_opp_def_vs_base': h_al - shot_base,
+            'shot_baseline': shot_base, 'goal_baseline': goal_base,
             'home_b2b': ctx_h.get('b2b'), 'away_b2b': ctx_a.get('b2b'),
             'home_free_days': ctx_h.get('free_days'), 'away_free_days': ctx_a.get('free_days'),
             'home_travel_km': ctx_h.get('travel_km'), 'away_travel_km': ctx_a.get('travel_km'),
@@ -467,6 +480,21 @@ def _predict_game_v2(home, away, game_date):
         }
     }
 
+
+def _predict_game_recency(home, away, game_date):
+    return _predict_variant(home, away, game_date, recency=True)
+
+
+def _predict_game_opponent(home, away, game_date):
+    return _predict_variant(home, away, game_date, opponent=True)
+
+
+def _predict_game_context(home, away, game_date):
+    return _predict_variant(home, away, game_date, context=True)
+
+
+def _predict_game_v2(home, away, game_date):
+    return _predict_variant(home, away, game_date, recency=True, opponent=True, context=True)
 
 def _poisson(lam, max_n=135):
     p = math.exp(-lam)
@@ -492,29 +520,7 @@ def _over(dist, line):
 
 
 def _predict_game(home, away, game_date):
-    rh = _history_before(home, game_date, 30)
-    ra = _history_before(away, game_date, 30)
-    if len(rh) < 10 or len(ra) < 10:
-        return None
-    eh = (
-        _blend(_weighted(rh, 'shots'), _venue_mean(rh, 'shots', True)) +
-        _blend(_weighted(ra, 'allowed'), _venue_mean(ra, 'allowed', False))
-    ) / 2
-    ea = (
-        _blend(_weighted(ra, 'shots'), _venue_mean(ra, 'shots', False)) +
-        _blend(_weighted(rh, 'allowed'), _venue_mean(rh, 'allowed', True))
-    ) / 2
-    gh = (
-        _blend(_weighted(rh, 'goals'), _venue_mean(rh, 'goals', True)) +
-        _blend(_weighted(ra, 'ga'), _venue_mean(ra, 'ga', False))
-    ) / 2
-    ga = (
-        _blend(_weighted(ra, 'goals'), _venue_mean(ra, 'goals', False)) +
-        _blend(_weighted(rh, 'ga'), _venue_mean(rh, 'ga', True))
-    ) / 2
-    return {'home_shots': eh, 'away_shots': ea, 'home_goals': gh, 'away_goals': ga,
-            'home_history': len(rh), 'away_history': len(ra)}
-
+    return _predict_variant(home, away, game_date)
 
 def _regulation_result(game_id):
     data = _nhl_json(f'/gamecenter/{game_id}/play-by-play')
@@ -593,6 +599,54 @@ def _metric_summary(predictions, label, reference=None):
         'baseline_accuracy': baseline_accuracy,
         'baseline_brier': baseline_brier,
         'brier_skill': brier_skill,
+    }
+
+
+def _chronological_calibration(predictions, train_fraction=0.60):
+    """Fit a simple affine probability calibrator on older observations and
+    evaluate it only on newer observations.
+
+    Predictions arrive newest-first from the backtest loop, so reversing them
+    creates chronological order. This avoids using future target outcomes to
+    calibrate earlier games.
+    """
+    ordered = list(reversed(predictions))
+    n = len(ordered)
+    if n < 25:
+        return {'available': False, 'n': n, 'reason': 'Málo dat pro chronologickou kalibraci'}
+    split = int(n * train_fraction)
+    split = max(12, min(n - 10, split))
+    train, test = ordered[:split], ordered[split:]
+    if len(train) < 12 or len(test) < 10:
+        return {'available': False, 'n': n, 'reason': 'Málo dat v train/test části'}
+
+    mean_p = sum(x['p'] for x in train) / len(train)
+    mean_y = sum(x['y'] for x in train) / len(train)
+    best = None
+    # Slope-only complexity is deliberately tiny. Intercept is anchored so the
+    # training mean probability equals the training hit rate after calibration.
+    for i in range(31):
+        slope = i / 20.0  # 0.00 ... 1.50
+        intercept = mean_y - slope * mean_p
+        vals = [_clip(intercept + slope * x['p'], .01, .99) for x in train]
+        brier = sum((p - x['y']) ** 2 for p, x in zip(vals, train)) / len(train)
+        if best is None or brier < best[0]:
+            best = (brier, slope, intercept)
+
+    _, slope, intercept = best
+    raw = [x['p'] for x in test]
+    calibrated = [_clip(intercept + slope * p, .01, .99) for p in raw]
+    raw_brier = sum((p - x['y']) ** 2 for p, x in zip(raw, test)) / len(test)
+    cal_brier = sum((p - x['y']) ** 2 for p, x in zip(calibrated, test)) / len(test)
+    return {
+        'available': True,
+        'train_n': len(train), 'test_n': len(test),
+        'slope': slope, 'intercept': intercept,
+        'raw_brier': raw_brier, 'calibrated_brier': cal_brier,
+        'brier_gain': raw_brier - cal_brier,
+        'raw_avg_probability': sum(raw) / len(raw),
+        'calibrated_avg_probability': sum(calibrated) / len(calibrated),
+        'actual_rate': sum(x['y'] for x in test) / len(test),
     }
 
 
@@ -741,8 +795,14 @@ def run_backtest(team, season_start, game_limit=10):
             'goals': {line: [] for line in GOAL_LINES},
         }
 
-    markets1, markets2 = empty_markets(), empty_markets()
-    lines1, lines2 = empty_lines(), empty_lines()
+    specs = {
+        'v1': ('Model 1', 'Původní auto forma 55/25/20 + 20% doma/venku', _predict_game),
+        'recency': ('Jen rychlejší forma', 'Pouze exponenciální recency (half-life 8); ostatní logika Modelu 1', _predict_game_recency),
+        'opponent': ('Jen síla soupeře', 'Pouze silnější attack-vs-defense normalizace; původní váhy formy', _predict_game_opponent),
+        'context': ('Jen B2B / odpočinek / cestování', 'Model 1 + data-derived kontext bez změny formy a soupeře', _predict_game_context),
+        'full': ('Full kandidát', 'Rychlejší forma + síla soupeře + B2B/odpočinek/cestování', _predict_game_v2),
+    }
+    stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
     game_rows, factor_rows = [], []
     skipped = 0
 
@@ -755,9 +815,8 @@ def run_backtest(team, season_start, game_limit=10):
             skipped += 1
             continue
 
-        p1 = _predict_game(home, away, date)
-        p2 = _predict_game_v2(home, away, date)
-        if not p1 or not p2:
+        predictions = {key: predictor(home, away, date) for key, (_, _, predictor) in specs.items()}
+        if any(p is None for p in predictions.values()):
             skipped += 1
             continue
 
@@ -771,34 +830,63 @@ def run_backtest(team, season_start, game_limit=10):
             continue
 
         regulation = _regulation_result(game_id)
-        e1 = _evaluate_model_prediction(p1, hs, aas, hg, ag, regulation, markets1, lines1)
-        e2 = _evaluate_model_prediction(p2, hs, aas, hg, ag, regulation, markets2, lines2)
+        evals = {}
+        for key, prediction in predictions.items():
+            st = stores[key]
+            evals[key] = _evaluate_model_prediction(
+                prediction, hs, aas, hg, ag, regulation, st['markets'], st['lines']
+            )
 
-        f = p2.get('factors') or {}
+        f = predictions['full'].get('factors') or {}
         factor_rows.append(f)
         game_rows.append({
-            'date': date,
-            'matchup': f'{away} @ {home}',
+            'date': date, 'matchup': f'{away} @ {home}',
             'actual_shots': f'{int(hs)}:{int(aas)}',
-            'expected_shots_v1': f"{p1['home_shots']:.1f}:{p1['away_shots']:.1f}",
-            'expected_shots_v2': f"{p2['home_shots']:.1f}:{p2['away_shots']:.1f}",
-            'h2h_pick_v1': home if e1['pick_home'] else away,
-            'h2h_probability_v1': e1['h2h_conf'],
-            'h2h_correct_v1': bool(e1['h2h_ok']),
-            'h2h_pick_v2': home if e2['pick_home'] else away,
-            'h2h_probability_v2': e2['h2h_conf'],
-            'h2h_correct_v2': bool(e2['h2h_ok']),
+            'expected_shots_v1': f"{predictions['v1']['home_shots']:.1f}:{predictions['v1']['away_shots']:.1f}",
+            'expected_shots_v2': f"{predictions['full']['home_shots']:.1f}:{predictions['full']['away_shots']:.1f}",
+            'h2h_pick_v1': home if evals['v1']['pick_home'] else away,
+            'h2h_probability_v1': evals['v1']['h2h_conf'], 'h2h_correct_v1': bool(evals['v1']['h2h_ok']),
+            'h2h_pick_v2': home if evals['full']['pick_home'] else away,
+            'h2h_probability_v2': evals['full']['h2h_conf'], 'h2h_correct_v2': bool(evals['full']['h2h_ok']),
             'home_b2b': f.get('home_b2b'), 'away_b2b': f.get('away_b2b'),
             'home_travel_km': f.get('home_travel_km'), 'away_travel_km': f.get('away_travel_km'),
         })
 
-    summaries1, summaries2 = _summaries(markets1), _summaries(markets2)
-    line_results1, line_results2 = _line_summaries(lines1), _line_summaries(lines2)
+    models = {}
+    for key, (label, description, _) in specs.items():
+        models[key] = {
+            'label': label, 'description': description,
+            'markets': _summaries(stores[key]['markets']),
+            'lines': _line_summaries(stores[key]['lines']),
+        }
+
     order = ('h2h', 'team', 'total', 'goals', 'winner')
+    ablation = {}
+    for market in order:
+        base = models['v1']['markets'][market]
+        rows = []
+        for key in specs:
+            m = models[key]['markets'][market]
+            rows.append({
+                'key': key, 'label': models[key]['label'], 'n': m['n'],
+                'accuracy': m['accuracy'], 'brier': m['brier'],
+                'accuracy_delta': None if base['accuracy'] is None or m['accuracy'] is None else m['accuracy'] - base['accuracy'],
+                'brier_gain': None if base['brier'] is None or m['brier'] is None else base['brier'] - m['brier'],
+            })
+        valid = [r for r in rows if r['brier'] is not None]
+        best = min(valid, key=lambda r: r['brier']) if valid else None
+        ablation[market] = {
+            'label': base['label'], 'rows': rows,
+            'best_model': best['key'] if best else None,
+            'best_label': best['label'] if best else None,
+            'best_brier_gain': best['brier_gain'] if best else None,
+        }
+
+    # Keep a compact Model 1 vs Full comparison for continuity with 0.12.
     comparison = {}
-    for key in order:
-        a, b = summaries1[key], summaries2[key]
-        comparison[key] = {
+    for market in order:
+        a, b = models['v1']['markets'][market], models['full']['markets'][market]
+        comparison[market] = {
             'label': b['label'], 'n': min(a['n'], b['n']),
             'accuracy_v1': a['accuracy'], 'accuracy_v2': b['accuracy'],
             'accuracy_delta': None if a['accuracy'] is None or b['accuracy'] is None else b['accuracy'] - a['accuracy'],
@@ -807,47 +895,36 @@ def run_backtest(team, season_start, game_limit=10):
             'reference': b['reference'],
         }
 
+    # Calibration is intentionally trained on the older 60% and evaluated on
+    # the newer 40% of this backtest window. It changes confidence, not picks.
+    calibration_oos = {
+        market: _chronological_calibration(stores['full']['markets'][market])
+        for market in order
+    }
+
     factor_summary = {}
     for key, label in (
-        ('home_context_shots', 'Kontext střel domácí'),
-        ('away_context_shots', 'Kontext střel hosté'),
-        ('home_context_goals', 'Kontext gólů domácí'),
-        ('away_context_goals', 'Kontext gólů hosté'),
+        ('home_context_shots', 'Kontext střel domácí'), ('away_context_shots', 'Kontext střel hosté'),
+        ('home_context_goals', 'Kontext gólů domácí'), ('away_context_goals', 'Kontext gólů hosté'),
     ):
         vals = [float(x[key]) for x in factor_rows if x.get(key) is not None]
         factor_summary[key] = {'label': label, 'mean': sum(vals)/len(vals) if vals else None,
                                'mean_abs': sum(abs(v) for v in vals)/len(vals) if vals else None}
-    b2b_count = sum(bool(x.get('home_b2b')) + bool(x.get('away_b2b')) for x in factor_rows)
+    factor_summary['b2b_team_games'] = sum(bool(x.get('home_b2b')) + bool(x.get('away_b2b')) for x in factor_rows)
     travel_vals = [float(v) for x in factor_rows for v in (x.get('home_travel_km'), x.get('away_travel_km')) if v is not None]
-    factor_summary['b2b_team_games'] = b2b_count
     factor_summary['avg_travel_km'] = sum(travel_vals)/len(travel_vals) if travel_vals else None
 
     return {
-        'team': team,
-        'scope': 'league' if team == 'ALL' else 'team',
-        'season': _season_id(season_start),
-        'requested_games': game_limit,
-        'evaluated_games': len(game_rows),
-        'skipped_games': skipped,
+        'team': team, 'scope': 'league' if team == 'ALL' else 'team',
+        'season': _season_id(season_start), 'requested_games': game_limit,
+        'evaluated_games': len(game_rows), 'skipped_games': skipped,
         'elapsed_seconds': round(time.time() - started, 1),
-        'models': {
-            'v1': {
-                'label': 'Model 1',
-                'description': 'Auto forma 55/25/20 + 20% korekce doma/venku při min. 5 zápasech',
-                'markets': summaries1, 'lines': line_results1,
-            },
-            'v2': {
-                'label': 'Model 2 (experimentální)',
-                'description': 'Exponenciální forma (half-life 8) + aditivní síla soupeře + data-derived B2B/odpočinek/cestování + stejná venue korekce',
-                'markets': summaries2, 'lines': line_results2,
-            },
-        },
-        'comparison': comparison,
-        'factor_summary': factor_summary,
+        'models': models, 'comparison': comparison, 'ablation': ablation,
+        'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
         'games': game_rows,
-        'warning': ('Model 2 je experimentální kandidát. Korekce B2B a cestování se odhadují pouze z předzápasové historie '
-                    'a jsou záměrně shrnuté a omezené; pokud v backtestu nezlepší Brier score/kalibraci, nemají se nasadit '
-                    'do hlavní analýzy. Backtest nepoužívá historické bookmakerové kurzy, takže nepočítá historické EV ani ROI.'),
+        'warning': ('0.13 je diagnostická verze: jednotlivé faktory se testují odděleně, aby bylo vidět, co skutečně zlepšuje '
+                    'Brier score. Chronologická kalibrace se učí jen na starší části testovacího okna a hodnotí na novější části; '
+                    'není to ještě finální kalibrátor pro živou Analýzu. Historické bookmakerové kurzy stále nejsou součástí backtestu.'),
     }
 
 
@@ -869,7 +946,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.12', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.13', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
