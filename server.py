@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.20 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.21 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -33,7 +33,7 @@ ARENA_COORDS = {
     'LAK':(34.04,-118.27),'MIN':(44.94,-93.10),'MTL':(45.50,-73.57),'NSH':(36.16,-86.78),
     'NJD':(40.73,-74.17),'NYI':(40.72,-73.59),'NYR':(40.75,-73.99),'OTT':(45.30,-75.93),
     'PHI':(39.90,-75.17),'PIT':(40.44,-79.99),'SEA':(47.62,-122.35),'SJS':(37.33,-121.90),
-    'STL':(38.63,-90.20),'TBL':(27.94,-82.45),'TOR':(43.64,-79.38),'UTA':(40.77,-111.90),
+    'STL':(38.63,-90.21),'TBL':(27.94,-82.45),'TOR':(43.64,-79.38),'UTA':(40.77,-111.90),
     'VAN':(49.28,-123.11),'VGK':(36.10,-115.18),'WSH':(38.90,-77.02),'WPG':(49.89,-97.14),
 }
 
@@ -163,7 +163,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.20',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.21',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -190,7 +190,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.20', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.21', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -758,6 +758,9 @@ def _profile_inputs(home, away, game_date):
                 'recent_pace': recent_pace, 'total_sd': total_sd,
                 'attempts': attempts, 'attempts_allowed': attempts_allowed,
                 'unblocked': unblocked, 'unblocked_allowed': unblocked_allowed,
+                'fivev5_attempts': fivev5, 'fivev5_attempts_allowed': fivev5_allowed,
+                'tied_attempts': tied, 'tied_attempts_allowed': tied_allowed,
+                'slot_attempts': slot, 'slot_attempts_allowed': slot_allowed,
                 'attempt_share': event_share, 'fivev5_share': fivev5_share,
                 'tied_share': tied_share, 'slot_share': slot_share,
                 'slot_rate': slot_rate, 'slot_rate_allowed': slot_rate_allowed,
@@ -935,7 +938,7 @@ def _event_ready(h, a):
 
 
 def _predict_game_event_share(home, away, game_date):
-    """0.20 event specialist for the 'více střel' market.
+    """0.21 event specialist for the 'více střel' market.
 
     Uses score-tied and 5v5 attempt share so the signal is less distorted by
     teams protecting a lead. The output still keeps most of Model 1's shot
@@ -961,7 +964,7 @@ def _predict_game_event_share(home, away, game_date):
 
 
 def _predict_game_event_matchup(home, away, game_date):
-    """0.20 team-shot specialist from attempt volume and shot suppression.
+    """0.21 team-shot specialist from attempt volume and shot suppression.
 
     It converts an offense-vs-defense attempt matchup back to expected shots on
     goal using each side's historical SOG-per-attempt rate. Slot-rate is only a
@@ -994,7 +997,7 @@ def _predict_game_event_matchup(home, away, game_date):
 
 
 def _predict_game_event_pace(home, away, game_date):
-    """0.20 total-shot specialist from all-attempt pace and recent event pace."""
+    """0.21 total-shot specialist from all-attempt pace and recent event pace."""
     data = _profile_inputs(home, away, game_date)
     if not data:
         return None
@@ -1021,7 +1024,7 @@ def _predict_game_event_pace(home, away, game_date):
 
 
 def _predict_game_event_goals(home, away, game_date):
-    """0.20 goal candidate: stable efficiency plus slot/PP pressure proxy."""
+    """0.21 goal candidate: stable efficiency plus slot/PP pressure proxy."""
     data = _profile_inputs(home, away, game_date)
     if not data:
         return None
@@ -1046,7 +1049,7 @@ def _predict_game_event_goals(home, away, game_date):
 
 
 def _predict_game_event_winner(home, away, game_date):
-    """0.20 regulation-result candidate from possession and chance-location edge."""
+    """0.21 regulation-result candidate from possession and chance-location edge."""
     data = _profile_inputs(home, away, game_date)
     if not data:
         return None
@@ -1064,6 +1067,149 @@ def _predict_game_event_winner(home, away, game_date):
     ga = _clip((total_goals - diff) / 2.0, .2, 8.0)
     return dict(base, home_goals=gh, away_goals=ga,
                 profile={'event_model': 'possession_result', 'possession_edge': possession_edge})
+
+
+
+def _predict_game_locked_h2h(home, away, game_date):
+    """0.21 locked H2H candidate.
+
+    The source is deliberately fixed to the only shot-control profile that was
+    stable in 0.20: score-tied + 5v5 attempt share. No per-fold model switching.
+    """
+    p = _predict_game_event_share(home, away, game_date)
+    if p is None:
+        return None
+    profile = dict(p.get('profile') or {})
+    profile.update({'locked_model': 'h2h_5v5_tied', 'version': '0.21'})
+    return dict(p, profile=profile)
+
+
+def _predict_game_locked_goals(home, away, game_date):
+    """0.21 locked goal candidate from repeated stable signals.
+
+    Efficiency and the PBP slot/PP model were independently stable in previous
+    walk-forward tests. The blend is fixed before the new test and therefore
+    cannot chase the newest fold.
+    """
+    base = _predict_game(home, away, game_date)
+    eff = _predict_game_efficiency(home, away, game_date)
+    event = _predict_game_event_goals(home, away, game_date)
+    if not base:
+        return None
+    if not eff or not event:
+        return dict(base, profile={'locked_model': 'goals_fallback', 'version': '0.21'})
+    gh = _clip(.45 * eff['home_goals'] + .55 * event['home_goals'], .2, 8.0)
+    ga = _clip(.45 * eff['away_goals'] + .55 * event['away_goals'], .2, 8.0)
+    return dict(base, home_goals=gh, away_goals=ga,
+                profile={'locked_model': 'goals_eff_slot_pp', 'version': '0.21'})
+
+
+def _predict_game_team_neutral(home, away, game_date):
+    """0.21 experiment for team-shot lines using neutral-state attempts + PP pressure."""
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    if not _event_ready(h, a):
+        return dict(base, profile={'locked_model': 'team_neutral_fallback'})
+    # Match offense to opponent suppression using 5v5 + tied attempts. Add a
+    # heavily-shrunk PP-attempt term; convert attempts to SOG using historical rates.
+    h_neutral = .65 * h['fivev5_attempts'] + .35 * h['tied_attempts']
+    a_neutral = .65 * a['fivev5_attempts'] + .35 * a['tied_attempts']
+    h_neutral_against = .65 * h['fivev5_attempts_allowed'] + .35 * h['tied_attempts_allowed']
+    a_neutral_against = .65 * a['fivev5_attempts_allowed'] + .35 * a['tied_attempts_allowed']
+    mid = (h_neutral + a_neutral + h_neutral_against + a_neutral_against) / 4.0
+    local_pp = (h['pp_attempts'] + h['pp_attempts_allowed'] + a['pp_attempts'] + a['pp_attempts_allowed']) / 4.0
+    h_pp = (h['pp_attempts'] + a['pp_attempts_allowed']) / 2.0
+    a_pp = (a['pp_attempts'] + h['pp_attempts_allowed']) / 2.0
+    h_att = h_neutral + a_neutral_against - mid + .12 * (h_pp - local_pp)
+    a_att = a_neutral + h_neutral_against - mid + .12 * (a_pp - local_pp)
+    h_conv = _clip((h['sog_per_attempt'] + a['sog_allowed_per_attempt']) / 2.0, .35, .80)
+    a_conv = _clip((a['sog_per_attempt'] + h['sog_allowed_per_attempt']) / 2.0, .35, .80)
+    h_event = _clip(h_att * h_conv, 10.0, 50.0)
+    a_event = _clip(a_att * a_conv, 10.0, 50.0)
+    return dict(base,
+                home_shots=_clip(.80 * base['home_shots'] + .20 * h_event, 10.0, 50.0),
+                away_shots=_clip(.80 * base['away_shots'] + .20 * a_event, 10.0, 50.0),
+                profile={'locked_model': 'team_neutral_pp', 'home_event_shots': h_event, 'away_event_shots': a_event})
+
+
+def _predict_game_total_neutral(home, away, game_date):
+    """0.21 experiment for total shots from neutral-state attempt pace and conversion."""
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    if not _event_ready(h, a):
+        return dict(base, profile={'locked_model': 'total_neutral_fallback'})
+    total0 = base['home_shots'] + base['away_shots']
+    neutral_pace_h = h['fivev5_attempts'] + h['fivev5_attempts_allowed']
+    neutral_pace_a = a['fivev5_attempts'] + a['fivev5_attempts_allowed']
+    tied_pace_h = h['tied_attempts'] + h['tied_attempts_allowed']
+    tied_pace_a = a['tied_attempts'] + a['tied_attempts_allowed']
+    neutral_attempt_pace = .72 * ((neutral_pace_h + neutral_pace_a) / 2.0) + .28 * ((tied_pace_h + tied_pace_a) / 2.0)
+    conv = _clip((h['sog_per_attempt'] + h['sog_allowed_per_attempt'] + a['sog_per_attempt'] + a['sog_allowed_per_attempt']) / 4.0, .38, .78)
+    event_total = _clip(neutral_attempt_pace * conv, 38.0, 82.0)
+    total = _clip(.82 * total0 + .18 * event_total, 38.0, 82.0)
+    share = base['home_shots'] / max(1.0, total0)
+    sigma = _clip((h['total_sd'] + a['total_sd']) / 2.0, 5.0, 12.0)
+    return dict(base,
+                home_shots=_clip(total * share, 10.0, 50.0),
+                away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
+                total_sigma=sigma,
+                profile={'locked_model': 'total_neutral_pace', 'event_total': event_total, 'total_sigma': sigma})
+
+
+def _predict_game_winner_plus(home, away, game_date):
+    """0.21 experiment for 1/X/2 using possession plus the stable goal profile."""
+    base = _predict_game(home, away, game_date)
+    event = _predict_game_event_winner(home, away, game_date)
+    goals = _predict_game_locked_goals(home, away, game_date)
+    if not base or not event or not goals:
+        return base
+    total = _clip(.55 * (goals['home_goals'] + goals['away_goals']) + .45 * (base['home_goals'] + base['away_goals']), .5, 12.0)
+    diff = _clip(.58 * (event['home_goals'] - event['away_goals']) + .42 * (goals['home_goals'] - goals['away_goals']), -3.5, 3.5)
+    return dict(base,
+                home_goals=_clip((total + diff) / 2.0, .2, 8.0),
+                away_goals=_clip((total - diff) / 2.0, .2, 8.0),
+                profile={'locked_model': 'winner_possession_goals', 'goal_diff': diff})
+
+
+def _shadow_analysis(home, away, game_date):
+    """Side-by-side live comparison. It never changes the production Model 1."""
+    p1 = _predict_game(home, away, game_date)
+    ph = _predict_game_locked_h2h(home, away, game_date)
+    pg = _predict_game_locked_goals(home, away, game_date)
+    if not p1 or not ph or not pg:
+        return None
+
+    def h2h_probs(pred):
+        sh, sa = _poisson(pred['home_shots']), _poisson(pred['away_shots'])
+        a, tie, b = _h2h(sh, sa)
+        return {'home': a, 'tie': tie, 'away': b}
+
+    def goal_probs(pred, line=5.5):
+        dist = _poisson(pred['home_goals'] + pred['away_goals'], 40)
+        over = _over(dist, line)
+        return {'line': line, 'over': over, 'under': 1.0 - over}
+
+    return {
+        'home': home, 'away': away, 'date': game_date,
+        'production': {
+            'home_shots': p1['home_shots'], 'away_shots': p1['away_shots'],
+            'home_goals': p1['home_goals'], 'away_goals': p1['away_goals'],
+            'h2h': h2h_probs(p1), 'goals_55': goal_probs(p1),
+        },
+        'locked_h2h': {
+            'home_shots': ph['home_shots'], 'away_shots': ph['away_shots'],
+            'h2h': h2h_probs(ph), 'profile': ph.get('profile') or {},
+        },
+        'locked_goals': {
+            'home_goals': pg['home_goals'], 'away_goals': pg['away_goals'],
+            'goals_55': goal_probs(pg), 'profile': pg.get('profile') or {},
+        },
+        'note': 'Shadow model pouze porovnává stabilní kandidáty; hlavní Analýza a EV zůstávají na Modelu 1.',
+    }
 
 
 def _normal_line_pick_row(expected, actual, line, sigma):
@@ -1311,7 +1457,7 @@ def _prefetch_backtest_histories(targets):
                 if gid:
                     history_ids.add(gid)
     _prefetch([f'/gamecenter/{gid}/boxscore' for gid in history_ids], workers=18)
-    # 0.20 event models need PBP for the same historical games used by each
+    # 0.21 event models need PBP for the same historical games used by each
     # pre-game feature window. Parse it directly into compact summaries so we
     # do not retain hundreds of full play-by-play documents in memory.
     if history_ids:
@@ -2039,8 +2185,90 @@ def _model8_specialists_walk_forward(tuning_rows):
     }
 
 
+
+def _model10_locked_walk_forward(tuning_rows):
+    """0.21 fixed-source walk-forward test.
+
+    H2H and goals are *locked* to previously stable candidates. The other three
+    markets each get one new experiment. No source is re-selected inside a fold.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    sources = {
+        'h2h': 'locked_h2h', 'team': 'team_neutral', 'total': 'total_neutral',
+        'goals': 'locked_goals', 'winner': 'winner_plus',
+    }
+    labels = {
+        'h2h': 'Více střel · LOCK 5v5+tied',
+        'team': 'Střely týmu · neutral+PP experiment',
+        'total': 'Celkové střely · neutral pace experiment',
+        'goals': 'Góly · LOCK efficiency+slot/PP',
+        'winner': '1/X/2 · possession+goals experiment',
+    }
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 180:
+        return {'available': False, 'reason': 'Model 10 Locked potřebuje alespoň 180 vyhodnocených zápasů.'}
+    fold_count = 5 if n >= 500 else 4 if n >= 300 else 3
+    warmup_n = max(90, n // 2)
+    remaining = n - warmup_n
+    fold_size = max(20, remaining // fold_count)
+    min_stable_gain = 0.0005
+    gains = {m: [] for m in order}
+    all_rows = {m: {'v1': [], 'candidate': []} for m in order}
+    folds = []
+    start = warmup_n
+    for fi in range(fold_count):
+        end = n if fi == fold_count - 1 else min(n, start + fold_size)
+        if end <= start:
+            break
+        test = ordered[start:end]
+        out = {}
+        for market in order:
+            a = _collect_source_market(test, market, 'v1')
+            b = _collect_source_market(test, market, sources[market])
+            ba, bb = _market_brier(a), _market_brier(b)
+            gain = None if ba is None or bb is None else ba - bb
+            gains[market].append(gain)
+            all_rows[market]['v1'].extend(a)
+            all_rows[market]['candidate'].extend(b)
+            out[market] = {'source': sources[market], 'gain': gain, 'brier_v1': ba, 'brier_candidate': bb, 'n': len(b)}
+        folds.append({'fold': fi+1, 'test_from': test[0]['date'], 'test_to': test[-1]['date'], 'markets': out})
+        start = end
+        if start >= n:
+            break
+    actual_folds = len(folds)
+    required_positive = max(2, math.ceil(actual_folds * .60)) if actual_folds else 0
+    summary = {}
+    for market in order:
+        valid = [x for x in gains[market] if x is not None]
+        positive = sum(x > 0 for x in valid)
+        mean_gain = sum(valid)/len(valid) if valid else None
+        worst_gain = min(valid) if valid else None
+        a = _metric_summary(all_rows[market]['v1'], labels[market])
+        b = _metric_summary(all_rows[market]['candidate'], labels[market])
+        eligible = bool(valid and len(valid) == actual_folds and positive >= required_positive and
+                        mean_gain is not None and mean_gain >= min_stable_gain and
+                        (worst_gain is None or worst_gain > -0.010))
+        summary[market] = {
+            'label': labels[market], 'source': sources[market], 'n': b['n'],
+            'positive_folds': positive, 'folds': actual_folds,
+            'mean_gain': mean_gain, 'worst_gain': worst_gain,
+            'brier_v1': a['brier'], 'brier_candidate': b['brier'],
+            'accuracy_v1': a['accuracy'], 'accuracy_candidate': b['accuracy'],
+            'eligible': eligible,
+            'role': 'locked' if market in ('h2h','goals') else 'experiment',
+        }
+    return {
+        'available': True, 'fold_count': actual_folds, 'warmup_n': warmup_n,
+        'required_positive_folds': required_positive, 'min_stable_gain': min_stable_gain,
+        'first_test_from': folds[0]['test_from'] if folds else None,
+        'last_test_to': folds[-1]['test_to'] if folds else None,
+        'markets': summary, 'folds': folds,
+    }
+
+
 def _model9_event_walk_forward(tuning_rows):
-    """0.20 walk-forward validation of richer NHL play-by-play event features.
+    """0.21 walk-forward validation of richer NHL play-by-play event features.
 
     The candidates use shot attempts (SOG + misses + blocks + goals), score-tied
     and 5v5 attempt share, a coordinate-based slot-attempt proxy and PP-attempt
@@ -2217,7 +2445,7 @@ def _model9_event_walk_forward(tuning_rows):
         'required_positive_folds': required_positive, 'min_stable_gain': min_stable_gain,
         'selector': selector_summary, 'stability': stability_summary, 'folds': folds_out,
         'event_coverage': coverage,
-        'note': ('0.20 používá NHL play-by-play: SOG, minuté a blokované pokusy, 5v5/tied stav, '
+        'note': ('0.21 používá NHL play-by-play: SOG, minuté a blokované pokusy, 5v5/tied stav, '
                  'PP pokusy a jednoduchý slot proxy z x/y souřadnic. Slot proxy není oficiální xG. '
                  'STABILNÍ znamená kladný průměrný Brier zisk a zlepšení alespoň v 60 % forward období.'),
     }
@@ -2730,6 +2958,11 @@ def run_backtest(team, season_start, game_limit=10):
         'event_pace': ('PBP tempo pokusů', 'Celkové střely: all-attempt pace + recent pace + převod pokusů na SOG', _predict_game_event_pace),
         'event_goals': ('PBP slot + PP profil', 'Góly: stabilní efektivita doplněná o slot-attempt a PP-attempt tlak', _predict_game_event_goals),
         'event_winner': ('PBP possession 1/X/2', '1/X/2: 5v5/tied attempt share + slot share + gólový rozdíl', _predict_game_event_winner),
+        'locked_h2h': ('LOCK 5v5+tied', '0.21: pevně zamknutý stabilní PBP profil pro více střel', _predict_game_locked_h2h),
+        'locked_goals': ('LOCK góly', '0.21: pevný blend efektivity + slot/PP pro góly', _predict_game_locked_goals),
+        'team_neutral': ('Neutral+PP týmové střely', '0.21 experiment: neutral-state attempts, suppression a PP tlak', _predict_game_team_neutral),
+        'total_neutral': ('Neutral pace celkové střely', '0.21 experiment: 5v5/tied attempt pace + převod na SOG', _predict_game_total_neutral),
+        'winner_plus': ('Possession+goals 1/X/2', '0.21 experiment: possession profil + stabilnější gólový profil', _predict_game_winner_plus),
     }
     stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
     game_rows, factor_rows, tuning_rows = [], [], []
@@ -2852,6 +3085,7 @@ def run_backtest(team, season_start, game_limit=10):
     model7 = _model7_walk_forward(tuning_rows)
     model8 = _model8_specialists_walk_forward(tuning_rows)
     model9 = _model9_event_walk_forward(tuning_rows)
+    model10 = _model10_locked_walk_forward(tuning_rows)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -2863,10 +3097,10 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'games': game_rows,
-        'warning': ('0.20 přidává Model 9 Event Data z NHL play-by-play: pokusy na branku i mimo branku, blokované pokusy, 5v5/tied shot-attempt share, PP pokusy a jednoduchý slot proxy z x/y souřadnic. '
-                    'Tyto nové informace se testují walk-forward proti Modelu 1 i specialistům 0.19. Slot proxy není oficiální xG a žádný faktor se nepřenáší do živé Analýzy bez opakovaného out-of-sample zlepšení. '
-                    'Multi-season režim je vyvážený mezi sezonami. Historické kurzy bookmakerů nejsou součástí backtestu.'),
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'games': game_rows,
+        'warning': ('0.21 přidává Model 10 Locked: stabilní 5v5+tied profil pro více střel a stabilní efficiency+slot/PP profil pro góly jsou před testem pevně zamknuté. '
+                    'Týmové střely, celkové střely a 1/X/2 dostávají vždy jen jeden nový experiment, aby se omezilo přelaďování. Živá Analýza dál používá Model 1; zamknuté kandidáty ukazuje pouze jako shadow porovnání. '
+                    'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -2880,6 +3114,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.handle_lineups(parse_qs(parsed.query))
         if parsed.path == '/backtest':
             return self.handle_backtest(parse_qs(parsed.query))
+        if parsed.path == '/shadow':
+            return self.handle_shadow(parse_qs(parsed.query))
         if not parsed.path.startswith('/api/'):
             return super().do_GET()
         path = parsed.path[4:]
@@ -2888,7 +3124,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.20', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.21', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -2930,6 +3166,26 @@ class Handler(SimpleHTTPRequestHandler):
             return self.respond(502, {'error': 'NHL API není při backtestu dostupné'})
         except Exception as exc:
             return self.respond(500, {'error': 'Backtest se nepodařilo dokončit', 'detail': str(exc)[:180]})
+
+    def handle_shadow(self, query):
+        home = (query.get('home', [''])[0] or '').upper()
+        away = (query.get('away', [''])[0] or '').upper()
+        game_date = (query.get('date', [''])[0] or '')[:10]
+        if home not in TEAM_NICK or away not in TEAM_NICK or home == away:
+            return self.respond(400, {'error': 'Neplatné týmy pro shadow model'})
+        if not re.fullmatch(r'20\d{2}-\d{2}-\d{2}', game_date):
+            return self.respond(400, {'error': 'Neplatné datum pro shadow model'})
+        try:
+            result = _shadow_analysis(home, away, game_date)
+            if not result:
+                return self.respond(422, {'error': 'Pro shadow model není dost předzápasových dat'})
+            return self.respond(200, result, cache='no-store')
+        except HTTPError as exc:
+            return self.respond(502, {'error': f'NHL API při shadow modelu odpovědělo HTTP {exc.code}'})
+        except (URLError, TimeoutError):
+            return self.respond(502, {'error': 'NHL API není pro shadow model dostupné'})
+        except Exception as exc:
+            return self.respond(500, {'error': 'Shadow model se nepodařilo spočítat', 'detail': str(exc)[:180]})
 
     def handle_lineups(self, query):
         requested = []
