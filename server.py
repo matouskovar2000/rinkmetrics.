@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.17 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.18 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -161,7 +161,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.17',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.18',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,7 +188,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.17', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.18', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -1224,6 +1224,176 @@ def _collect_source_market(rows, market, source):
     return out
 
 
+
+def _model7_walk_forward(tuning_rows):
+    """0.18 walk-forward stability test for the fixed profile families.
+
+    The older half of the sample is the initial warm-up. The newer half is
+    split into chronological forward folds. For every fold, source selection
+    uses only games strictly before that fold, then evaluates on the next
+    unseen block. Calibration is fitted on the same prior-only training set
+    and reported separately so an unstable calibration cannot hide a weak raw
+    model.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    labels = {'v1': 'Model 1', 'pace': 'Tempo střel', 'share': 'Shot-share profil',
+              'efficiency': 'Efektivita střel / inkasování', 'profile': 'Kombinovaný profil'}
+    market_labels = {
+        'h2h': 'Více střel', 'team': 'Střely týmu ±', 'total': 'Celkové střely ±',
+        'goals': 'Góly ±', 'winner': 'Vítěz 1/X/2',
+    }
+    candidates = {
+        'h2h': ('v1', 'share', 'pace', 'profile'),
+        'team': ('v1', 'share', 'pace', 'profile'),
+        'total': ('v1', 'pace', 'profile'),
+        'goals': ('v1', 'efficiency', 'profile'),
+        'winner': ('v1', 'efficiency', 'profile'),
+    }
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 180:
+        return {'available': False, 'reason': 'Model 7 Walk-forward potřebuje alespoň 180 vyhodnocených zápasů.'}
+
+    fold_count = 5 if n >= 500 else 4 if n >= 300 else 3
+    warmup_n = max(90, n // 2)
+    remaining = n - warmup_n
+    fold_size = max(20, remaining // fold_count)
+    min_train_gain = 0.0005
+    min_stable_gain = 0.0005
+    required_positive = max(2, math.ceil(fold_count * .60))
+
+    stability = {m: {src: [] for src in candidates[m] if src != 'v1'} for m in order}
+    selector_rows = {m: {'v1': [], 'raw': [], 'cal': []} for m in order}
+    selector_fold_gains = {m: [] for m in order}
+    calibration_fold_gains = {m: [] for m in order}
+    selector_sources = {m: {} for m in order}
+    folds_out = []
+
+    start = warmup_n
+    for fold_index in range(fold_count):
+        end = n if fold_index == fold_count - 1 else min(n, start + fold_size)
+        if end <= start:
+            break
+        train = ordered[:start]
+        test = ordered[start:end]
+        fold_market = {}
+
+        for market in order:
+            train_v1 = _collect_source_market(train, market, 'v1')
+            test_v1 = _collect_source_market(test, market, 'v1')
+            b_train_v1 = _market_brier(train_v1)
+            b_test_v1 = _market_brier(test_v1)
+
+            # Stability of every fixed profile family on this unseen fold.
+            for source in candidates[market]:
+                if source == 'v1':
+                    continue
+                test_src = _collect_source_market(test, market, source)
+                b_src = _market_brier(test_src)
+                gain = None if b_test_v1 is None or b_src is None else b_test_v1 - b_src
+                stability[market][source].append({
+                    'fold': fold_index + 1, 'n': len(test_src), 'gain': gain,
+                    'brier_v1': b_test_v1, 'brier_source': b_src,
+                })
+
+            # Train-only selector: choose a source using only data before this fold.
+            train_scores = []
+            for source in candidates[market]:
+                rows = _collect_source_market(train, market, source)
+                train_scores.append((source, _market_brier(rows)))
+            valid = [x for x in train_scores if x[1] is not None]
+            best_source, best_brier = min(valid, key=lambda x: x[1]) if valid else ('v1', b_train_v1)
+            train_gain = None if b_train_v1 is None or best_brier is None else b_train_v1 - best_brier
+            selected = best_source if best_source != 'v1' and train_gain is not None and train_gain >= min_train_gain else 'v1'
+            selector_sources[market][selected] = selector_sources[market].get(selected, 0) + 1
+
+            raw_test = _collect_source_market(test, market, selected)
+            b_raw = _market_brier(raw_test)
+            raw_gain = None if b_test_v1 is None or b_raw is None else b_test_v1 - b_raw
+            selector_fold_gains[market].append(raw_gain)
+
+            train_selected = _collect_source_market(train, market, selected)
+            fit = _fit_affine(train_selected)
+            cal_test = _apply_affine(raw_test, fit) if fit else [dict(x) for x in raw_test]
+            b_cal = _market_brier(cal_test)
+            cal_gain = None if b_raw is None or b_cal is None else b_raw - b_cal
+            calibration_fold_gains[market].append(cal_gain)
+
+            selector_rows[market]['v1'].extend(test_v1)
+            selector_rows[market]['raw'].extend(raw_test)
+            selector_rows[market]['cal'].extend(cal_test)
+            fold_market[market] = {
+                'selected_source': selected, 'selected_label': labels[selected],
+                'train_gain': train_gain, 'raw_gain': raw_gain, 'calibration_gain': cal_gain,
+                'n': len(raw_test),
+            }
+
+        folds_out.append({
+            'fold': fold_index + 1, 'train_n': len(train), 'test_n': len(test),
+            'train_from': train[0]['date'], 'train_to': train[-1]['date'],
+            'test_from': test[0]['date'], 'test_to': test[-1]['date'],
+            'markets': fold_market,
+        })
+        start = end
+        if start >= n:
+            break
+
+    actual_folds = len(folds_out)
+    required_positive = max(2, math.ceil(actual_folds * .60)) if actual_folds else 0
+
+    stability_summary = {}
+    for market in order:
+        rows = []
+        for source, fold_rows in stability[market].items():
+            gains = [x['gain'] for x in fold_rows if x['gain'] is not None]
+            mean_gain = sum(gains) / len(gains) if gains else None
+            worst_gain = min(gains) if gains else None
+            positive = sum(g > 0 for g in gains)
+            eligible = bool(gains and len(gains) == actual_folds and positive >= required_positive and
+                            mean_gain is not None and mean_gain >= min_stable_gain and
+                            (worst_gain is None or worst_gain > -0.010))
+            rows.append({
+                'source': source, 'label': labels[source], 'folds': len(gains),
+                'positive_folds': positive, 'mean_gain': mean_gain, 'worst_gain': worst_gain,
+                'eligible': eligible, 'total_n': sum(x['n'] for x in fold_rows),
+            })
+        rows.sort(key=lambda x: (x['mean_gain'] is None, -(x['mean_gain'] or 0.0)))
+        stability_summary[market] = {'label': market_labels[market], 'profiles': rows}
+
+    selector_summary = {}
+    for market in order:
+        v1_rows = selector_rows[market]['v1']
+        raw_rows = selector_rows[market]['raw']
+        cal_rows = selector_rows[market]['cal']
+        b_v1, b_raw, b_cal = _market_brier(v1_rows), _market_brier(raw_rows), _market_brier(cal_rows)
+        raw_gain = None if b_v1 is None or b_raw is None else b_v1 - b_raw
+        cal_vs_raw = None if b_raw is None or b_cal is None else b_raw - b_cal
+        final_gain = None if b_v1 is None or b_cal is None else b_v1 - b_cal
+        raw_fold = [g for g in selector_fold_gains[market] if g is not None]
+        cal_fold = [g for g in calibration_fold_gains[market] if g is not None]
+        positive_raw = sum(g > 0 for g in raw_fold)
+        positive_cal = sum(g > 0 for g in cal_fold)
+        eligible_raw = bool(raw_fold and positive_raw >= required_positive and raw_gain is not None and raw_gain >= min_stable_gain)
+        eligible_cal = bool(cal_fold and positive_cal >= required_positive and cal_vs_raw is not None and cal_vs_raw >= min_stable_gain)
+        selector_summary[market] = {
+            'label': market_labels[market], 'n': len(raw_rows),
+            'source_counts': selector_sources[market],
+            'brier_v1': b_v1, 'brier_raw': b_raw, 'brier_calibrated': b_cal,
+            'raw_brier_gain': raw_gain, 'calibration_brier_gain': cal_vs_raw, 'final_brier_gain': final_gain,
+            'positive_raw_folds': positive_raw, 'positive_calibration_folds': positive_cal,
+            'folds': actual_folds, 'eligible_raw': eligible_raw, 'eligible_calibration': eligible_cal,
+        }
+
+    return {
+        'available': True, 'fold_count': actual_folds, 'warmup_n': warmup_n,
+        'first_test_from': folds_out[0]['test_from'] if folds_out else None,
+        'last_test_to': folds_out[-1]['test_to'] if folds_out else None,
+        'required_positive_folds': required_positive, 'min_stable_gain': min_stable_gain,
+        'selector': selector_summary, 'stability': stability_summary, 'folds': folds_out,
+        'note': ('Každý fold používá pouze starší zápasy k výběru zdroje a kalibraci. '
+                 'Profil je označen jako stabilní jen při kladném průměrném Brier zisku a zlepšení alespoň v 60 % forward foldů.'),
+    }
+
 def _model6_profiles(tuning_rows, empty_markets, empty_lines):
     """0.17: select genuinely different information by market.
 
@@ -1841,6 +2011,7 @@ def run_backtest(team, season_start, game_limit=10):
     model4 = _model4_train_test(tuning_rows, empty_markets, empty_lines)
     model5 = _model5_select(tuning_rows, empty_markets, empty_lines)
     model6 = _model6_profiles(tuning_rows, empty_markets, empty_lines)
+    model7 = _model7_walk_forward(tuning_rows)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -1852,10 +2023,10 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'games': game_rows,
-        'warning': ('0.17 přidává Model 6 Profiles: místo dalšího ladění stejných vah testuje nové předzápasové informace — tempo střel, shot share a efektivitu střel/inkasování — zvlášť pro každý trh. '
-                    'Train vybírá kandidáta, validation rozhoduje zda smí nahradit Model 1 a nejnovějších 25 % je nedotčený finální test. Multi-season režim zůstává vyvážený mezi sezonami. Živá Analýza '
-                    'stále používá Model 1, dokud výběrový model neprokáže stabilní zlepšení na finálním testu a napříč sezonami. Historické kurzy bookmakerů nejsou součástí backtestu.'),
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'games': game_rows,
+        'warning': ('0.18 přidává Model 7 Walk-forward: novější polovinu historie dělí do několika po sobě jdoucích forward foldů. V každém foldu se model i kalibrace učí výhradně ze starších zápasů a hodnotí se na bezprostředně následujícím bloku. '
+                    'Nový profil je považovaný za stabilní jen tehdy, když zlepšuje průměrný Brier a pomáhá alespoň v 60 % forward období. Model 6 Profiles zůstává jako diagnostika nových informací. Multi-season režim je vyvážený mezi sezonami. Živá Analýza '
+                    'stále používá Model 1, dokud nový trh neprokáže opakované out-of-sample zlepšení. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -1877,7 +2048,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.17', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.18', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
