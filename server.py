@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.19 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.20 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -53,6 +53,8 @@ _nhl_cache = {}
 _nhl_cache_lock = threading.Lock()
 _history_cache = {}
 _history_cache_lock = threading.Lock()
+_event_cache = {}
+_event_cache_lock = threading.Lock()
 
 
 class TextExtractor(HTMLParser):
@@ -161,7 +163,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.19',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.20',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,7 +190,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.19', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.20', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -228,6 +230,172 @@ def _game_id(game):
     return game.get('id') or game.get('gameId')
 
 
+def _game_event_summary(game_id):
+    """Parse one historical NHL play-by-play feed into team event features.
+
+    The summary is deliberately descriptive, not an xG model. It uses only
+    public pre-existing events from that game: shot attempts, unblocked attempts,
+    5v5 / power-play attempt counts, score-tied attempts and a simple slot-attempt
+    proxy from rink coordinates. Shootout events are ignored.
+    """
+    with _event_cache_lock:
+        cached = _event_cache.get(game_id)
+    if cached is not None:
+        return cached
+
+    data = _nhl_json(f'/gamecenter/{game_id}/play-by-play')
+    home = data.get('homeTeam') or {}
+    away = data.get('awayTeam') or {}
+    home_id, away_id = home.get('id'), away.get('id')
+    home_abbr, away_abbr = home.get('abbrev'), away.get('abbrev')
+    if not home_id or not away_id or not home_abbr or not away_abbr:
+        result = {'teams': {}, 'coverage': False}
+        with _event_cache_lock:
+            _event_cache[game_id] = result
+        return result
+
+    def blank():
+        return {
+            'attempts': 0.0, 'unblocked': 0.0, 'sog_events': 0.0,
+            'missed': 0.0, 'blocked': 0.0,
+            'fivev5_attempts': 0.0, 'pp_attempts': 0.0,
+            'tied_attempts': 0.0, 'slot_attempts': 0.0,
+            'slot_unblocked': 0.0,
+        }
+
+    by_id = {home_id: blank(), away_id: blank()}
+    score = {home_id: 0, away_id: 0}
+    regulation_score = {home_id: 0, away_id: 0}
+
+    # Player IDs make blocked-shot attribution more robust. The feed often owns
+    # a blocked event by the blocking team, while shootingPlayerId identifies
+    # the actual attacking skater. If the boxscore roster is unavailable we
+    # still fall back to the opposite of eventOwnerTeamId.
+    player_team = {}
+    try:
+        box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
+        pbg = box.get('playerByGameStats') or {}
+        for side, team_id in (('homeTeam', home_id), ('awayTeam', away_id)):
+            groups = pbg.get(side) or {}
+            for group in ('forwards', 'defense', 'goalies'):
+                for player in groups.get(group) or []:
+                    pid = player.get('playerId')
+                    if pid:
+                        player_team[pid] = team_id
+    except Exception:
+        player_team = {}
+
+    plays = data.get('plays') or []
+
+    def parse_situation(code, shooter_id):
+        code = str(code or '')
+        if len(code) != 4 or not code.isdigit():
+            return None
+        away_goalie, away_skaters, home_skaters, home_goalie = map(int, code)
+        if shooter_id == home_id:
+            return home_skaters, away_skaters, home_goalie, away_goalie
+        if shooter_id == away_id:
+            return away_skaters, home_skaters, away_goalie, home_goalie
+        return None
+
+    for play in plays:
+        period = (play.get('periodDescriptor') or {}).get('number')
+        if not isinstance(period, int) or period < 1 or period > 4:
+            continue
+        typ = play.get('typeDescKey')
+        if typ not in ('goal', 'shot-on-goal', 'missed-shot', 'blocked-shot'):
+            continue
+        details = play.get('details') or {}
+        owner = details.get('eventOwnerTeamId')
+        if owner not in by_id:
+            continue
+
+        # Blocked events can be owned by the blocking team. Prefer the
+        # shooting player's roster team; otherwise use the opposite owner.
+        if typ == 'blocked-shot':
+            shooter = player_team.get(details.get('shootingPlayerId'))
+            if shooter not in by_id:
+                shooter = away_id if owner == home_id else home_id
+        else:
+            shooter = owner
+        stats = by_id[shooter]
+        stats['attempts'] += 1.0
+        if typ != 'blocked-shot':
+            stats['unblocked'] += 1.0
+        if typ in ('goal', 'shot-on-goal'):
+            stats['sog_events'] += 1.0
+        elif typ == 'missed-shot':
+            stats['missed'] += 1.0
+        elif typ == 'blocked-shot':
+            stats['blocked'] += 1.0
+
+        if score[home_id] == score[away_id]:
+            stats['tied_attempts'] += 1.0
+
+        situation = parse_situation(play.get('situationCode'), shooter)
+        if situation:
+            own_skaters, opp_skaters, own_goalie, opp_goalie = situation
+            if own_goalie == 1 and opp_goalie == 1 and own_skaters == 5 and opp_skaters == 5:
+                stats['fivev5_attempts'] += 1.0
+            if own_goalie == 1 and opp_goalie == 1 and own_skaters > opp_skaters:
+                stats['pp_attempts'] += 1.0
+
+        x, y = details.get('xCoord'), details.get('yCoord')
+        try:
+            # Goal line is about 89 ft from centre. abs(x) makes the proxy
+            # independent of which end the attacking team used that period.
+            dx = max(0.0, 89.0 - abs(float(x)))
+            yy = abs(float(y))
+            distance = math.hypot(dx, yy)
+            in_slot = distance <= 35.0 and yy <= 22.0
+        except (TypeError, ValueError):
+            in_slot = False
+        if in_slot:
+            stats['slot_attempts'] += 1.0
+            if typ != 'blocked-shot':
+                stats['slot_unblocked'] += 1.0
+
+        if typ == 'goal':
+            score[shooter] += 1
+            if period <= 3:
+                regulation_score[shooter] += 1
+
+    home_stats, away_stats = by_id[home_id], by_id[away_id]
+    regulation = ('home' if regulation_score[home_id] > regulation_score[away_id]
+                  else 'away' if regulation_score[away_id] > regulation_score[home_id] else 'draw')
+    result = {
+        'coverage': bool(home_stats['attempts'] and away_stats['attempts']),
+        'regulation': regulation,
+        'teams': {
+            home_abbr: dict(home_stats, **{
+                'attempts_allowed': away_stats['attempts'],
+                'unblocked_allowed': away_stats['unblocked'],
+                'fivev5_attempts_allowed': away_stats['fivev5_attempts'],
+                'pp_attempts_allowed': away_stats['pp_attempts'],
+                'tied_attempts_allowed': away_stats['tied_attempts'],
+                'slot_attempts_allowed': away_stats['slot_attempts'],
+                'slot_unblocked_allowed': away_stats['slot_unblocked'],
+            }),
+            away_abbr: dict(away_stats, **{
+                'attempts_allowed': home_stats['attempts'],
+                'unblocked_allowed': home_stats['unblocked'],
+                'fivev5_attempts_allowed': home_stats['fivev5_attempts'],
+                'pp_attempts_allowed': home_stats['pp_attempts'],
+                'tied_attempts_allowed': home_stats['tied_attempts'],
+                'slot_attempts_allowed': home_stats['slot_attempts'],
+                'slot_unblocked_allowed': home_stats['slot_unblocked'],
+            }),
+        },
+    }
+    with _event_cache_lock:
+        _event_cache[game_id] = result
+    # Keep the compact event summary, not hundreds of raw PBP events, to stay
+    # within Render memory limits during 600-game validation.
+    with _nhl_cache_lock:
+        _nhl_cache.pop(f'/gamecenter/{game_id}/play-by-play', None)
+    return result
+
+
 def _box_row(game, team):
     game_id = _game_id(game)
     box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
@@ -243,7 +411,7 @@ def _box_row(game, team):
         shots, allowed, goals, ga = [float(x) for x in vals]
     except (TypeError, ValueError):
         return None
-    return {
+    row = {
         'date': game.get('gameDate') or (game.get('startTimeUTC') or '')[:10],
         'opp': opp.get('abbrev'),
         'home': home,
@@ -254,6 +422,27 @@ def _box_row(game, team):
         'ga': ga,
         'gameId': game_id,
     }
+    try:
+        event = (_game_event_summary(game_id).get('teams') or {}).get(team) or {}
+    except Exception:
+        event = {}
+    # Safe fallbacks preserve old models even if an old game has incomplete PBP.
+    defaults = {
+        'attempts': shots, 'attempts_allowed': allowed,
+        'unblocked': shots, 'unblocked_allowed': allowed,
+        'fivev5_attempts': shots, 'fivev5_attempts_allowed': allowed,
+        'pp_attempts': 0.0, 'pp_attempts_allowed': 0.0,
+        'tied_attempts': shots, 'tied_attempts_allowed': allowed,
+        'slot_attempts': 0.0, 'slot_attempts_allowed': 0.0,
+        'slot_unblocked': 0.0, 'slot_unblocked_allowed': 0.0,
+    }
+    for key, fallback in defaults.items():
+        try:
+            row[key] = float(event.get(key, fallback))
+        except (TypeError, ValueError):
+            row[key] = float(fallback)
+    row['event_coverage'] = bool(event)
+    return row
 
 
 def _history_games_before(team, game_date, n=30):
@@ -536,11 +725,49 @@ def _profile_inputs(home, away, game_date):
         mean_total = sum(totals) / len(totals)
         total_sd = math.sqrt(sum((x - mean_total) ** 2 for x in totals) / max(1, len(totals)))
         win_rate = sum(float(r['goals']) > float(r['ga']) for r in rows) / len(rows)
+
+        attempts = max(1.0, _weighted(rows, 'attempts'))
+        attempts_allowed = max(1.0, _weighted(rows, 'attempts_allowed'))
+        unblocked = max(1.0, _weighted(rows, 'unblocked'))
+        unblocked_allowed = max(1.0, _weighted(rows, 'unblocked_allowed'))
+        fivev5 = max(1.0, _weighted(rows, 'fivev5_attempts'))
+        fivev5_allowed = max(1.0, _weighted(rows, 'fivev5_attempts_allowed'))
+        tied = max(1.0, _weighted(rows, 'tied_attempts'))
+        tied_allowed = max(1.0, _weighted(rows, 'tied_attempts_allowed'))
+        slot = max(0.0, _weighted(rows, 'slot_attempts'))
+        slot_allowed = max(0.0, _weighted(rows, 'slot_attempts_allowed'))
+        pp = max(0.0, _weighted(rows, 'pp_attempts'))
+        pp_allowed = max(0.0, _weighted(rows, 'pp_attempts_allowed'))
+        event_share = attempts / max(1.0, attempts + attempts_allowed)
+        fivev5_share = fivev5 / max(1.0, fivev5 + fivev5_allowed)
+        tied_share = tied / max(1.0, tied + tied_allowed)
+        slot_share = slot / max(1.0, slot + slot_allowed)
+        slot_rate = slot / max(1.0, attempts)
+        slot_rate_allowed = slot_allowed / max(1.0, attempts_allowed)
+        sog_per_attempt = shots / max(1.0, attempts)
+        sog_allowed_per_attempt = allowed / max(1.0, attempts_allowed)
+        recent_attempts = _avg(recent, 'attempts')
+        recent_attempts_allowed = _avg(recent, 'attempts_allowed')
+        recent_attempt_pace = recent_attempts + recent_attempts_allowed
+        event_coverage = sum(bool(r.get('event_coverage')) for r in rows) / len(rows)
+
         return {'shots': shots, 'allowed': allowed, 'pace': pace, 'share': share,
                 'shoot': shoot, 'concede': concede, 'goal_share': goal_share,
                 'shot_diff': shots - allowed, 'goal_diff': goals - ga, 'win_rate': win_rate,
                 'recent_shots': recent_shots, 'recent_allowed': recent_allowed,
-                'recent_pace': recent_pace, 'total_sd': total_sd}
+                'recent_pace': recent_pace, 'total_sd': total_sd,
+                'attempts': attempts, 'attempts_allowed': attempts_allowed,
+                'unblocked': unblocked, 'unblocked_allowed': unblocked_allowed,
+                'attempt_share': event_share, 'fivev5_share': fivev5_share,
+                'tied_share': tied_share, 'slot_share': slot_share,
+                'slot_rate': slot_rate, 'slot_rate_allowed': slot_rate_allowed,
+                'pp_attempts': pp, 'pp_attempts_allowed': pp_allowed,
+                'sog_per_attempt': sog_per_attempt,
+                'sog_allowed_per_attempt': sog_allowed_per_attempt,
+                'recent_attempts': recent_attempts,
+                'recent_attempts_allowed': recent_attempts_allowed,
+                'recent_attempt_pace': recent_attempt_pace,
+                'event_coverage': event_coverage}
 
     return base, stats(rh), stats(ra)
 
@@ -703,6 +930,142 @@ def _predict_game_winner_strength(home, away, game_date):
                 profile={'specialist': 'winner_strength', 'strength_diff': strength_diff})
 
 
+def _event_ready(h, a):
+    return min(float(h.get('event_coverage', 0.0)), float(a.get('event_coverage', 0.0))) >= .70
+
+
+def _predict_game_event_share(home, away, game_date):
+    """0.20 event specialist for the 'více střel' market.
+
+    Uses score-tied and 5v5 attempt share so the signal is less distorted by
+    teams protecting a lead. The output still keeps most of Model 1's shot
+    expectation and changes mainly the split between the two teams.
+    """
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    if not _event_ready(h, a):
+        return dict(base, profile={'event_model': 'attempt_share', 'coverage': 'fallback'})
+    total = base['home_shots'] + base['away_shots']
+    base_share = base['home_shots'] / max(1.0, total)
+    h_control = .35 * h['attempt_share'] + .40 * h['fivev5_share'] + .25 * h['tied_share']
+    a_control = .35 * a['attempt_share'] + .40 * a['fivev5_share'] + .25 * a['tied_share']
+    event_share = _clip(.5 + .58 * (h_control - a_control), .38, .62)
+    share = _clip(.78 * base_share + .22 * event_share, .36, .64)
+    return dict(base,
+                home_shots=_clip(total * share, 10.0, 50.0),
+                away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
+                profile={'event_model': 'attempt_share', 'home_control': h_control,
+                         'away_control': a_control, 'home_shot_share': share})
+
+
+def _predict_game_event_matchup(home, away, game_date):
+    """0.20 team-shot specialist from attempt volume and shot suppression.
+
+    It converts an offense-vs-defense attempt matchup back to expected shots on
+    goal using each side's historical SOG-per-attempt rate. Slot-rate is only a
+    small modifier, not a claimed xG estimate.
+    """
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    if not _event_ready(h, a):
+        return dict(base, profile={'event_model': 'attempt_matchup', 'coverage': 'fallback'})
+    mid = (h['attempts'] + h['attempts_allowed'] + a['attempts'] + a['attempts_allowed']) / 4.0
+    h_attempt = _clip(h['attempts'] + a['attempts_allowed'] - mid, 25.0, 90.0)
+    a_attempt = _clip(a['attempts'] + h['attempts_allowed'] - mid, 25.0, 90.0)
+    h_conv = _clip((h['sog_per_attempt'] + a['sog_allowed_per_attempt']) / 2.0, .35, .80)
+    a_conv = _clip((a['sog_per_attempt'] + h['sog_allowed_per_attempt']) / 2.0, .35, .80)
+    local_slot = (h['slot_rate'] + h['slot_rate_allowed'] + a['slot_rate'] + a['slot_rate_allowed']) / 4.0
+    h_slot = (h['slot_rate'] + a['slot_rate_allowed']) / 2.0
+    a_slot = (a['slot_rate'] + h['slot_rate_allowed']) / 2.0
+    h_quality = _clip(1.0 + .45 * (h_slot - local_slot), .94, 1.06)
+    a_quality = _clip(1.0 + .45 * (a_slot - local_slot), .94, 1.06)
+    h_event = h_attempt * h_conv * h_quality
+    a_event = a_attempt * a_conv * a_quality
+    hs = _clip(.74 * base['home_shots'] + .26 * h_event, 10.0, 50.0)
+    aas = _clip(.74 * base['away_shots'] + .26 * a_event, 10.0, 50.0)
+    return dict(base, home_shots=hs, away_shots=aas,
+                profile={'event_model': 'attempt_matchup', 'home_attempt_mean': h_attempt,
+                         'away_attempt_mean': a_attempt, 'home_sog_per_attempt': h_conv,
+                         'away_sog_per_attempt': a_conv})
+
+
+def _predict_game_event_pace(home, away, game_date):
+    """0.20 total-shot specialist from all-attempt pace and recent event pace."""
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    if not _event_ready(h, a):
+        return dict(base, profile={'event_model': 'attempt_pace', 'coverage': 'fallback'})
+    total0 = base['home_shots'] + base['away_shots']
+    long_attempt_pace = ((h['attempts'] + h['attempts_allowed']) +
+                         (a['attempts'] + a['attempts_allowed'])) / 2.0
+    recent_attempt_pace = (h['recent_attempt_pace'] + a['recent_attempt_pace']) / 2.0
+    attempt_pace = .72 * long_attempt_pace + .28 * recent_attempt_pace
+    conversion = _clip((h['sog_per_attempt'] + h['sog_allowed_per_attempt'] +
+                        a['sog_per_attempt'] + a['sog_allowed_per_attempt']) / 4.0, .38, .78)
+    event_total = _clip(attempt_pace * conversion, 38.0, 82.0)
+    total = _clip(.72 * total0 + .28 * event_total, 38.0, 82.0)
+    base_share = base['home_shots'] / max(1.0, total0)
+    event_share = _clip(.5 + .45 * (h['fivev5_share'] - a['fivev5_share']), .40, .60)
+    share = _clip(.88 * base_share + .12 * event_share, .37, .63)
+    return dict(base,
+                home_shots=_clip(total * share, 10.0, 50.0),
+                away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
+                profile={'event_model': 'attempt_pace', 'attempt_pace': attempt_pace,
+                         'sog_conversion': conversion, 'total_mean': total})
+
+
+def _predict_game_event_goals(home, away, game_date):
+    """0.20 goal candidate: stable efficiency plus slot/PP pressure proxy."""
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    eff = _predict_game_efficiency(home, away, game_date)
+    if not eff or not _event_ready(h, a):
+        return eff or base
+    local_slot = (h['slot_rate'] + h['slot_rate_allowed'] + a['slot_rate'] + a['slot_rate_allowed']) / 4.0
+    h_slot = (h['slot_rate'] + a['slot_rate_allowed']) / 2.0
+    a_slot = (a['slot_rate'] + h['slot_rate_allowed']) / 2.0
+    # PP shot-attempt counts are a style/discipline proxy only; they are shrunk heavily.
+    local_pp = (h['pp_attempts'] + h['pp_attempts_allowed'] + a['pp_attempts'] + a['pp_attempts_allowed']) / 4.0
+    h_pp = (h['pp_attempts'] + a['pp_attempts_allowed']) / 2.0
+    a_pp = (a['pp_attempts'] + h['pp_attempts_allowed']) / 2.0
+    h_factor = _clip(1.0 + .55 * (h_slot - local_slot) + .012 * (h_pp - local_pp), .92, 1.08)
+    a_factor = _clip(1.0 + .55 * (a_slot - local_slot) + .012 * (a_pp - local_pp), .92, 1.08)
+    gh = _clip(.78 * eff['home_goals'] + .22 * eff['home_goals'] * h_factor, .2, 8.0)
+    ga = _clip(.78 * eff['away_goals'] + .22 * eff['away_goals'] * a_factor, .2, 8.0)
+    return dict(eff, home_goals=gh, away_goals=ga,
+                profile={'event_model': 'slot_pp_goals', 'home_quality_factor': h_factor,
+                         'away_quality_factor': a_factor})
+
+
+def _predict_game_event_winner(home, away, game_date):
+    """0.20 regulation-result candidate from possession and chance-location edge."""
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    if not _event_ready(h, a):
+        return dict(base, profile={'event_model': 'possession_result', 'coverage': 'fallback'})
+    total_goals = base['home_goals'] + base['away_goals']
+    base_diff = base['home_goals'] - base['away_goals']
+    possession_edge = (.45 * (h['fivev5_share'] - a['fivev5_share']) +
+                       .25 * (h['tied_share'] - a['tied_share']) +
+                       .30 * (h['slot_share'] - a['slot_share']))
+    event_diff = _clip(5.5 * possession_edge + .25 * (h['goal_diff'] - a['goal_diff']), -3.0, 3.0)
+    diff = _clip(.78 * base_diff + .22 * event_diff, -3.5, 3.5)
+    gh = _clip((total_goals + diff) / 2.0, .2, 8.0)
+    ga = _clip((total_goals - diff) / 2.0, .2, 8.0)
+    return dict(base, home_goals=gh, away_goals=ga,
+                profile={'event_model': 'possession_result', 'possession_edge': possession_edge})
+
+
 def _normal_line_pick_row(expected, actual, line, sigma):
     sigma = max(.5, float(sigma))
     # P(X > line) under a normal approximation with pre-game estimated sigma.
@@ -743,23 +1106,14 @@ def _predict_game(home, away, game_date):
     return _predict_variant(home, away, game_date)
 
 def _regulation_result(game_id):
-    data = _nhl_json(f'/gamecenter/{game_id}/play-by-play')
-    home_id = (data.get('homeTeam') or {}).get('id')
-    away_id = (data.get('awayTeam') or {}).get('id')
-    plays = data.get('plays') or []
-    if not home_id or not away_id:
-        return None
-    home = away = 0
-    for play in plays:
-        period = ((play.get('periodDescriptor') or {}).get('number'))
-        if play.get('typeDescKey') != 'goal' or not isinstance(period, int) or period < 1 or period > 3:
-            continue
-        owner = (play.get('details') or {}).get('eventOwnerTeamId')
-        if owner == home_id:
-            home += 1
-        elif owner == away_id:
-            away += 1
-    return 'home' if home > away else 'away' if away > home else 'draw'
+    try:
+        summary = _game_event_summary(game_id)
+        result = summary.get('regulation')
+        if result in ('home', 'away', 'draw'):
+            return result
+    except Exception:
+        pass
+    return None
 
 
 def _add_prediction(bucket, probability, correct, side=None, actual=None):
@@ -957,7 +1311,12 @@ def _prefetch_backtest_histories(targets):
                 if gid:
                     history_ids.add(gid)
     _prefetch([f'/gamecenter/{gid}/boxscore' for gid in history_ids], workers=18)
-    _prefetch([f'/gamecenter/{gid}/play-by-play' for gid in target_ids], workers=18)
+    # 0.20 event models need PBP for the same historical games used by each
+    # pre-game feature window. Parse it directly into compact summaries so we
+    # do not retain hundreds of full play-by-play documents in memory.
+    if history_ids:
+        with ThreadPoolExecutor(max_workers=min(16, len(history_ids))) as pool:
+            list(pool.map(_game_event_summary, history_ids))
 
 
 def _record_line(bucket, expected, actual, line, max_n=135):
@@ -1680,6 +2039,190 @@ def _model8_specialists_walk_forward(tuning_rows):
     }
 
 
+def _model9_event_walk_forward(tuning_rows):
+    """0.20 walk-forward validation of richer NHL play-by-play event features.
+
+    The candidates use shot attempts (SOG + misses + blocks + goals), score-tied
+    and 5v5 attempt share, a coordinate-based slot-attempt proxy and PP-attempt
+    volume. These are descriptive pre-game features; the slot proxy is not xG.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    labels = {
+        'v1': 'Model 1',
+        'h2h_edge': '0.19 Shot edge', 'team_matchup': '0.19 Útok vs. potlačení',
+        'total_specialist': '0.19 Tempo + variabilita', 'winner_strength': '0.19 Výkonnostní 1/X/2',
+        'efficiency': 'Efektivita střel / inkasování', 'profile': 'Kombinovaný gólový profil',
+        'event_share': 'PBP 5v5 + tied attempt share',
+        'event_matchup': 'PBP attempts: útok vs. obrana',
+        'event_pace': 'PBP tempo všech pokusů',
+        'event_goals': 'PBP slot + PP gólový profil',
+        'event_winner': 'PBP possession 1/X/2',
+    }
+    market_labels = {
+        'h2h': 'Více střel', 'team': 'Střely týmu ±', 'total': 'Celkové střely ±',
+        'goals': 'Góly ±', 'winner': 'Vítěz 1/X/2',
+    }
+    candidates = {
+        'h2h': ('v1', 'h2h_edge', 'event_share'),
+        'team': ('v1', 'team_matchup', 'event_matchup'),
+        'total': ('v1', 'total_specialist', 'event_pace'),
+        'goals': ('v1', 'efficiency', 'profile', 'event_goals'),
+        'winner': ('v1', 'winner_strength', 'event_winner'),
+    }
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 180:
+        return {'available': False, 'reason': 'Model 9 Event Data potřebuje alespoň 180 vyhodnocených zápasů.'}
+
+    fold_count = 5 if n >= 500 else 4 if n >= 300 else 3
+    warmup_n = max(90, n // 2)
+    remaining = n - warmup_n
+    fold_size = max(20, remaining // fold_count)
+    min_train_gain = 0.0005
+    min_stable_gain = 0.0005
+
+    stability = {m: {src: [] for src in candidates[m] if src != 'v1'} for m in order}
+    selector_rows = {m: {'v1': [], 'raw': [], 'cal': []} for m in order}
+    selector_fold_gains = {m: [] for m in order}
+    calibration_fold_gains = {m: [] for m in order}
+    selector_sources = {m: {} for m in order}
+    folds_out = []
+
+    start = warmup_n
+    for fold_index in range(fold_count):
+        end = n if fold_index == fold_count - 1 else min(n, start + fold_size)
+        if end <= start:
+            break
+        train = ordered[:start]
+        test = ordered[start:end]
+        fold_market = {}
+        for market in order:
+            train_v1 = _collect_source_market(train, market, 'v1')
+            test_v1 = _collect_source_market(test, market, 'v1')
+            b_train_v1 = _market_brier(train_v1)
+            b_test_v1 = _market_brier(test_v1)
+
+            for source in candidates[market]:
+                if source == 'v1':
+                    continue
+                test_src = _collect_source_market(test, market, source)
+                b_src = _market_brier(test_src)
+                gain = None if b_test_v1 is None or b_src is None else b_test_v1 - b_src
+                stability[market][source].append({
+                    'fold': fold_index + 1, 'n': len(test_src), 'gain': gain,
+                    'brier_v1': b_test_v1, 'brier_source': b_src,
+                })
+
+            train_scores = []
+            for source in candidates[market]:
+                rows = _collect_source_market(train, market, source)
+                train_scores.append((source, _market_brier(rows)))
+            valid = [x for x in train_scores if x[1] is not None]
+            best_source, best_brier = min(valid, key=lambda x: x[1]) if valid else ('v1', b_train_v1)
+            train_gain = None if b_train_v1 is None or best_brier is None else b_train_v1 - best_brier
+            selected = best_source if best_source != 'v1' and train_gain is not None and train_gain >= min_train_gain else 'v1'
+            selector_sources[market][selected] = selector_sources[market].get(selected, 0) + 1
+
+            raw_test = _collect_source_market(test, market, selected)
+            b_raw = _market_brier(raw_test)
+            raw_gain = None if b_test_v1 is None or b_raw is None else b_test_v1 - b_raw
+            selector_fold_gains[market].append(raw_gain)
+
+            train_selected = _collect_source_market(train, market, selected)
+            fit = _fit_affine(train_selected)
+            cal_test = _apply_affine(raw_test, fit) if fit else [dict(x) for x in raw_test]
+            b_cal = _market_brier(cal_test)
+            cal_gain = None if b_raw is None or b_cal is None else b_raw - b_cal
+            calibration_fold_gains[market].append(cal_gain)
+
+            selector_rows[market]['v1'].extend(test_v1)
+            selector_rows[market]['raw'].extend(raw_test)
+            selector_rows[market]['cal'].extend(cal_test)
+            fold_market[market] = {
+                'selected_source': selected, 'selected_label': labels[selected],
+                'train_gain': train_gain, 'raw_gain': raw_gain, 'calibration_gain': cal_gain,
+                'n': len(raw_test),
+            }
+
+        folds_out.append({
+            'fold': fold_index + 1, 'train_n': len(train), 'test_n': len(test),
+            'train_from': train[0]['date'], 'train_to': train[-1]['date'],
+            'test_from': test[0]['date'], 'test_to': test[-1]['date'],
+            'markets': fold_market,
+        })
+        start = end
+        if start >= n:
+            break
+
+    actual_folds = len(folds_out)
+    required_positive = max(2, math.ceil(actual_folds * .60)) if actual_folds else 0
+    stability_summary = {}
+    for market in order:
+        rows = []
+        for source, fold_rows in stability[market].items():
+            gains = [x['gain'] for x in fold_rows if x['gain'] is not None]
+            mean_gain = sum(gains) / len(gains) if gains else None
+            worst_gain = min(gains) if gains else None
+            positive = sum(g > 0 for g in gains)
+            eligible = bool(gains and len(gains) == actual_folds and positive >= required_positive and
+                            mean_gain is not None and mean_gain >= min_stable_gain and
+                            (worst_gain is None or worst_gain > -0.010))
+            rows.append({
+                'source': source, 'label': labels[source], 'folds': len(gains),
+                'positive_folds': positive, 'mean_gain': mean_gain, 'worst_gain': worst_gain,
+                'eligible': eligible, 'total_n': sum(x['n'] for x in fold_rows),
+            })
+        rows.sort(key=lambda x: (x['mean_gain'] is None, -(x['mean_gain'] or 0.0)))
+        stability_summary[market] = {'label': market_labels[market], 'profiles': rows}
+
+    selector_summary = {}
+    for market in order:
+        v1_rows, raw_rows, cal_rows = (selector_rows[market][k] for k in ('v1', 'raw', 'cal'))
+        b_v1, b_raw, b_cal = _market_brier(v1_rows), _market_brier(raw_rows), _market_brier(cal_rows)
+        raw_gain = None if b_v1 is None or b_raw is None else b_v1 - b_raw
+        cal_vs_raw = None if b_raw is None or b_cal is None else b_raw - b_cal
+        final_gain = None if b_v1 is None or b_cal is None else b_v1 - b_cal
+        raw_fold = [g for g in selector_fold_gains[market] if g is not None]
+        cal_fold = [g for g in calibration_fold_gains[market] if g is not None]
+        positive_raw = sum(g > 0 for g in raw_fold)
+        positive_cal = sum(g > 0 for g in cal_fold)
+        eligible_raw = bool(raw_fold and positive_raw >= required_positive and raw_gain is not None and raw_gain >= min_stable_gain)
+        eligible_cal = bool(cal_fold and positive_cal >= required_positive and cal_vs_raw is not None and cal_vs_raw >= min_stable_gain)
+        selector_summary[market] = {
+            'label': market_labels[market], 'n': len(raw_rows), 'source_counts': selector_sources[market],
+            'brier_v1': b_v1, 'brier_raw': b_raw, 'brier_calibrated': b_cal,
+            'raw_brier_gain': raw_gain, 'calibration_brier_gain': cal_vs_raw, 'final_brier_gain': final_gain,
+            'positive_raw_folds': positive_raw, 'positive_calibration_folds': positive_cal,
+            'folds': actual_folds, 'eligible_raw': eligible_raw, 'eligible_calibration': eligible_cal,
+        }
+
+    with _event_cache_lock:
+        event_values = list(_event_cache.values())
+    covered = [x for x in event_values if x.get('coverage')]
+    attempt_counts = []
+    for item in covered:
+        for st in (item.get('teams') or {}).values():
+            if st.get('attempts') is not None:
+                attempt_counts.append(float(st['attempts']))
+    coverage = {
+        'games_cached': len(event_values), 'games_with_events': len(covered),
+        'coverage_rate': (len(covered) / len(event_values)) if event_values else None,
+        'avg_team_attempts': (sum(attempt_counts) / len(attempt_counts)) if attempt_counts else None,
+    }
+
+    return {
+        'available': True, 'fold_count': actual_folds, 'warmup_n': warmup_n,
+        'first_test_from': folds_out[0]['test_from'] if folds_out else None,
+        'last_test_to': folds_out[-1]['test_to'] if folds_out else None,
+        'required_positive_folds': required_positive, 'min_stable_gain': min_stable_gain,
+        'selector': selector_summary, 'stability': stability_summary, 'folds': folds_out,
+        'event_coverage': coverage,
+        'note': ('0.20 používá NHL play-by-play: SOG, minuté a blokované pokusy, 5v5/tied stav, '
+                 'PP pokusy a jednoduchý slot proxy z x/y souřadnic. Slot proxy není oficiální xG. '
+                 'STABILNÍ znamená kladný průměrný Brier zisk a zlepšení alespoň v 60 % forward období.'),
+    }
+
+
 def _model6_profiles(tuning_rows, empty_markets, empty_lines):
     """0.17: select genuinely different information by market.
 
@@ -2182,6 +2725,11 @@ def run_backtest(team, season_start, game_limit=10):
         'team_matchup': ('Útok vs. potlačení střel', 'Týmové střely: konkrétní útok proti schopnosti soupeře střely potlačovat', _predict_game_team_matchup),
         'total_specialist': ('Tempo + variabilita', 'Celkové střely: společné tempo, recent tempo a předzápasová variabilita', _predict_game_total_specialist),
         'winner_strength': ('Výkonnostní 1/X/2 profil', '1/X/2: gólový rozdíl + shot edge + dlouhodobá výsledková síla', _predict_game_winner_strength),
+        'event_share': ('PBP kontrola pokusů', 'Více střel: score-tied + 5v5 shot-attempt share z play-by-play', _predict_game_event_share),
+        'event_matchup': ('PBP útok vs. obrana', 'Týmové střely: pokusy, bloky/minuté střely, shot suppression a SOG/attempt', _predict_game_event_matchup),
+        'event_pace': ('PBP tempo pokusů', 'Celkové střely: all-attempt pace + recent pace + převod pokusů na SOG', _predict_game_event_pace),
+        'event_goals': ('PBP slot + PP profil', 'Góly: stabilní efektivita doplněná o slot-attempt a PP-attempt tlak', _predict_game_event_goals),
+        'event_winner': ('PBP possession 1/X/2', '1/X/2: 5v5/tied attempt share + slot share + gólový rozdíl', _predict_game_event_winner),
     }
     stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
     game_rows, factor_rows, tuning_rows = [], [], []
@@ -2303,6 +2851,7 @@ def run_backtest(team, season_start, game_limit=10):
     model6 = _model6_profiles(tuning_rows, empty_markets, empty_lines)
     model7 = _model7_walk_forward(tuning_rows)
     model8 = _model8_specialists_walk_forward(tuning_rows)
+    model9 = _model9_event_walk_forward(tuning_rows)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -2314,10 +2863,10 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'games': game_rows,
-        'warning': ('0.19 přidává Model 8 Specialists: více střel dostává shot-edge profil, týmové střely matchup útoku proti potlačení střel, celkové střely tempo + variabilitu a 1/X/2 samostatný výkonnostní profil. '
-                    'Každý specialista se znovu ověřuje walk-forward pouze na budoucích blocích. Góly dál kontrolují stabilní efficiency/profile směr z 0.18. Model 7 zůstává jako srovnávací diagnostika. '
-                    'Multi-season režim je vyvážený mezi sezonami. Živá Analýza stále používá Model 1, dokud nový trh neprokáže opakované out-of-sample zlepšení. Historické kurzy bookmakerů nejsou součástí backtestu.'),
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'games': game_rows,
+        'warning': ('0.20 přidává Model 9 Event Data z NHL play-by-play: pokusy na branku i mimo branku, blokované pokusy, 5v5/tied shot-attempt share, PP pokusy a jednoduchý slot proxy z x/y souřadnic. '
+                    'Tyto nové informace se testují walk-forward proti Modelu 1 i specialistům 0.19. Slot proxy není oficiální xG a žádný faktor se nepřenáší do živé Analýzy bez opakovaného out-of-sample zlepšení. '
+                    'Multi-season režim je vyvážený mezi sezonami. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -2339,7 +2888,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.19', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.20', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
