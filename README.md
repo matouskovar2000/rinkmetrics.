@@ -1,23 +1,24 @@
-# NHL Team Shots Analyzer 0.15
+# NHL Team Shots Analyzer 0.16
 
-Verze 0.15 přidává **Model 4 – samostatné faktory pro každý trh**. Už nenutíme více střel, týmové střely, celkové střely, góly a 1/X/2 používat stejné váhy.
+Verze 0.16 přidává **Model 5 Select** a přísnější validaci. Cílem je zabránit tomu, aby se nový faktor nebo kalibrace dostaly do modelu jen proto, že náhodou vyšly dobře na stejném holdoutu, podle kterého jsme je vybrali.
 
 ## Co je nové
-- data se dál chronologicky dělí na **60 % train / 40 % holdout**;
-- každý z pěti trhů si na train části samostatně vybírá váhu **rychlé formy**, **síly soupeře** a **B2B/odpočinku/cestování**;
-- grid search je konzervativní: součet faktorových vah nesmí překročit 1,0 a větší odchylky od Modelu 1 dostávají malou regularizační penalizaci;
-- tabulka Model 4 ukazuje pro každý trh jiné zvolené váhy, train Brier zisk a hlavně **holdout Brier zisk**;
-- týmové střely, celkové střely a góly mají na holdoutu vlastní tabulky hranic s baseline a Brier Skill;
-- kalibrace pravděpodobností se učí samostatně pro každý trh pouze na train části a testuje až na holdoutu;
-- starší ablační a Full-model diagnostika zůstává v aplikaci jako kontrola, ale hlavním rozhodovacím testem je Model 4.
+- Chronologické dělení dat na **50 % train / 25 % validation / 25 % finální test**.
+- Train část ladí samostatné váhy rychlé formy, síly soupeře a B2B/odpočinku/cestování pro každý z pěti trhů.
+- Validation část rozhodne, zda daný trh smí použít Model 4, nebo se má vrátit k Modelu 1.
+- Kalibrace se také povolí jen tehdy, když na validation části zlepší Brier score alespoň o minimální práh.
+- Nejnovějších 25 % zápasů zůstává **zcela nedotčený finální test**. Ten se nepoužívá pro výběr vah, modelu ani kalibrace.
+- Nový režim **2024/25 + 2025/26** bere vyvážený počet zápasů z obou sezon. Při 600 zápasech jde přibližně o 300 + 300, takže novější sezóna nevytlačí starší.
+- League-wide multi-season backtest lze spustit až na **600 zápasech**.
+- Výsledky ukazují pro každý trh vybraný model, povolenou/zakázanou kalibraci a skutečný Brier zisk na finálním testu.
 
-## Jak výsledek číst
-Nejdůležitější je **holdout Brier zisk**. Kladná hodnota znamená, že tržně specifický Model 4 na novějších, při ladění neviděných zápasech překonal Model 1. Nulová váha u faktoru znamená, že se na train datech nevyplatilo ho pro daný trh přidat.
+## Jak Model 5 číst
+Nejdůležitější je sekce **Model 5 Select · nedotčený finální test**. Kladný Brier zisk znamená, že výběrový model měl na datech, která nikdy neviděl při ladění ani výběru, přesnější pravděpodobnosti než Model 1.
 
-Vyšší úspěšnost bez lepšího Brier score nestačí. Stejně tak vysoká úspěšnost na extrémní hranici může být jen důsledkem jednoduché baseline (například téměř vždy under).
+Pokud validation nepotvrdí přínos Modelu 4, trh automaticky zůstane na Modelu 1. Stejně tak se nepoužije kalibrace, pokud na validation části nepomůže. To je záměrně konzervativní.
 
-## Živá Analýza
-Živá záložka **Analýza stále používá Model 1**. Model 4 je zatím pouze validační laboratoř. Do živých pravděpodobností ho má smysl zapojit až tehdy, když se jeho přínos opakuje na větších league-wide vzorcích a více obdobích.
+## Doporučený test
+Zvol `Celá NHL`, období `2024/25 + 2025/26` a nejdříve `300` zápasů. Pokud vše proběhne, spusť `600`. U 600 zápasů je train/validation/final přibližně 300/150/150.
 
 ## Omezení
-Backtest nepoužívá historické bookmakerové kurzy, takže z něj nelze přímo odvozovat historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí živého modelu. Model není finálně validovaný a nejde o sázkové doporučení.
+Živá záložka Analýza zatím stále používá Model 1. Model 5 je validační laboratoř; do živého výpočtu se nepřenese, dokud neukáže stabilní přínos na finálním testu a napříč časovými obdobími. Backtest nepoužívá historické bookmakerové kurzy, takže nepočítá skutečné historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí modelu. Nejde o sázkové doporučení.

@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.15 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.16 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -161,7 +161,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.15',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.16',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,7 +188,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.15', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.16', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -372,7 +372,7 @@ def _context_adjustment(rows, key, target, kind):
 
     limit_b2b = 1.5 if kind == 'shots' else 0.30
     limit_rest_slope = 0.45 if kind == 'shots' else 0.08  # per extra free day, capped context
-    limit_rest = 0.8 if kind == 'shots' else 0.15
+    limit_rest = 0.8 if kind == 'shots' else 0.16
     limit_slope = 0.75 if kind == 'shots' else 0.12  # per 1000 km
     limit_travel = 1.5 if kind == 'shots' else 0.25
 
@@ -406,7 +406,7 @@ def _context_adjustment(rows, key, target, kind):
         ys = [y for _, y in travel_rows]
         mx, my = sum(xs)/len(xs), sum(ys)/len(ys)
         var = sum((x-mx)**2 for x in xs)
-        if var > 0.15:
+        if var > 0.16:
             slope = sum((x-mx)*(y-my) for x, y in travel_rows) / var
             slope *= len(travel_rows) / (len(travel_rows) + 20.0)
             slope = _clip(slope, -limit_slope, limit_slope)
@@ -688,12 +688,31 @@ def _league_schedule(season_start):
 
 
 def _prepare_backtest_targets(team, season_start, game_limit):
-    if team == 'ALL':
-        schedule = _league_schedule(season_start)
-    else:
-        schedule = [g for g in _team_schedule(team, season_start) if _completed_regular(g)]
-    schedule.sort(key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)
-    return schedule[:game_limit]
+    """Prepare a balanced historical sample.
+
+    ``season_start`` may be one start year or a sequence of start years. In the
+    multi-season mode we take an approximately equal number of games from each
+    season before combining them. This prevents the newer season from crowding
+    the older one out of the requested sample.
+    """
+    seasons = list(season_start) if isinstance(season_start, (list, tuple)) else [season_start]
+    base = game_limit // len(seasons)
+    remainder = game_limit % len(seasons)
+    selected = []
+    for idx, start in enumerate(seasons):
+        limit = base + (1 if idx < remainder else 0)
+        if team == 'ALL':
+            schedule = _league_schedule(start)
+        else:
+            schedule = [g for g in _team_schedule(team, start) if _completed_regular(g)]
+        schedule.sort(key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)
+        selected.extend(schedule[:limit])
+    unique = {}
+    for game in selected:
+        gid = _game_id(game)
+        if gid:
+            unique[gid] = game
+    return sorted(unique.values(), key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)[:game_limit]
 
 
 def _prefetch_backtest_histories(targets):
@@ -1011,7 +1030,7 @@ def _model3_train_test(tuning_rows, empty_markets, empty_lines):
 def _market_prediction_rows(prediction, row, market):
     """Return only the reference prediction(s) needed by one market.
 
-    0.15 tunes each betting market independently, so we intentionally avoid
+    0.16 tunes each betting market independently, so we intentionally avoid
     forcing one set of factor weights onto unrelated markets.
     """
     hs, aas = row['hs'], row['aas']
@@ -1212,6 +1231,217 @@ def _model4_train_test(tuning_rows, empty_markets, empty_lines):
         'holdout_games': list(reversed(rows_out)),
     }
 
+
+
+def _apply_affine(rows, fit):
+    if not fit:
+        return [dict(x) for x in rows]
+    out = []
+    for row in rows:
+        copy = dict(row)
+        copy['p'] = _clip(fit['intercept'] + fit['slope'] * row['p'], .01, .99)
+        out.append(copy)
+    return out
+
+
+def _model5_select(tuning_rows, empty_markets, empty_lines):
+    """0.16 selective model with a true untouched final test.
+
+    Older 50%: tune market-specific factor weights.
+    Middle 25%: decide whether Model 4 is allowed to replace Model 1 and whether
+    calibration is allowed for that market.
+    Newest 25%: final test that is never used for choosing weights, model source,
+    or calibration.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 100:
+        return {'available': False, 'reason': 'Model 5 Select potřebuje alespoň 100 vyhodnocených zápasů.'}
+
+    train_end = max(50, int(n * .50))
+    val_end = max(train_end + 25, int(n * .75))
+    val_end = min(val_end, n - 25)
+    train, validation, test = ordered[:train_end], ordered[train_end:val_end], ordered[val_end:]
+
+    recency_grid = (0.0, .25, .50, .75, 1.0)
+    opponent_grid = (0.0, .10, .20, .30, .40)
+    context_grid = (0.0, .10, .20, .30)
+    min_model_gain = 0.0005
+    min_cal_gain = 0.0005
+
+    decisions = {}
+    weights_by_market = {}
+    selected_source = {}
+    calibration_fit_final = {}
+    total_tested = 0
+
+    for market in order:
+        train_v1 = _collect_one_market(train, market, use_v1=True)
+        val_v1 = _collect_one_market(validation, market, use_v1=True)
+        train_brier_v1 = _market_brier(train_v1)
+        val_brier_v1 = _market_brier(val_v1)
+
+        best = None
+        tested = 0
+        for wr in recency_grid:
+            for wo in opponent_grid:
+                for wc in context_grid:
+                    if wr + wo + wc > 1.0 + 1e-9:
+                        continue
+                    weights = {'recency': wr, 'opponent': wo, 'context': wc}
+                    objective, raw_brier = _market_weight_objective(train, market, weights)
+                    tested += 1
+                    if best is None or objective < best['objective']:
+                        best = {'weights': weights, 'objective': objective, 'brier': raw_brier}
+        total_tested += tested
+
+        candidate_weights = best['weights']
+        train_m4 = _collect_one_market(train, market, weights=candidate_weights)
+        val_m4 = _collect_one_market(validation, market, weights=candidate_weights)
+        val_brier_m4 = _market_brier(val_m4)
+        validation_gain = None if val_brier_v1 is None or val_brier_m4 is None else val_brier_v1 - val_brier_m4
+        train_gain = None if train_brier_v1 is None or best['brier'] is None else train_brier_v1 - best['brier']
+
+        use_m4 = bool(validation_gain is not None and validation_gain >= min_model_gain and
+                      train_gain is not None and train_gain > 0)
+        if use_m4:
+            source = 'm4'
+            chosen_weights = candidate_weights
+            sel_train, sel_val = train_m4, val_m4
+        else:
+            source = 'v1'
+            chosen_weights = {'recency': 0.0, 'opponent': 0.0, 'context': 0.0}
+            sel_train, sel_val = train_v1, val_v1
+
+        # Calibration is itself selected only on the middle validation block.
+        fit_train = _fit_affine(sel_train)
+        cal_validation_gain = None
+        use_calibration = False
+        if fit_train and len(sel_val) >= 8:
+            raw_val_brier = _market_brier(sel_val)
+            cal_val_rows = _apply_affine(sel_val, fit_train)
+            cal_val_brier = _market_brier(cal_val_rows)
+            if raw_val_brier is not None and cal_val_brier is not None:
+                cal_validation_gain = raw_val_brier - cal_val_brier
+                use_calibration = cal_validation_gain >= min_cal_gain
+
+        # Once calibration is approved on validation, refit it on train+validation.
+        if use_calibration:
+            fit_final = _fit_affine(sel_train + sel_val)
+        else:
+            fit_final = None
+
+        selected_source[market] = source
+        weights_by_market[market] = chosen_weights
+        calibration_fit_final[market] = fit_final
+        decisions[market] = {
+            'weights': chosen_weights,
+            'candidate_weights': candidate_weights,
+            'grid_tested': tested,
+            'train_brier_v1': train_brier_v1,
+            'train_brier_candidate': best['brier'],
+            'train_brier_gain': train_gain,
+            'validation_brier_v1': val_brier_v1,
+            'validation_brier_candidate': val_brier_m4,
+            'validation_brier_gain': validation_gain,
+            'selected_source': source,
+            'calibration_enabled': bool(use_calibration),
+            'calibration_validation_gain': cal_validation_gain,
+            'calibration_slope': None if not fit_final else fit_final['slope'],
+            'calibration_intercept': None if not fit_final else fit_final['intercept'],
+        }
+
+    # Final untouched test: Model 1 baseline, selected raw model, and selected+calibrated.
+    v1_test_markets = {m: _collect_one_market(test, m, use_v1=True) for m in order}
+    sel_test_raw = {}
+    sel_test_final = {}
+    for market in order:
+        if selected_source[market] == 'm4':
+            raw_rows = _collect_one_market(test, market, weights=weights_by_market[market])
+        else:
+            raw_rows = _collect_one_market(test, market, use_v1=True)
+        sel_test_raw[market] = raw_rows
+        sel_test_final[market] = _apply_affine(raw_rows, calibration_fit_final[market])
+
+    def summary_map(store):
+        labels = {
+            'h2h': ('Více střel', '3cestný trh; shoda = prohra týmového výběru'),
+            'team': ('Střely týmu ±', 'referenční hranice 27,5'),
+            'total': ('Celkové střely ±', 'referenční hranice 56,5'),
+            'goals': ('Góly ±', 'referenční hranice 5,5'),
+            'winner': ('Vítěz 1/X/2', 'výsledek po 60 minutách'),
+        }
+        return {m: _metric_summary(store[m], labels[m][0], labels[m][1]) for m in order}
+
+    v1_summary = summary_map(v1_test_markets)
+    raw_summary = summary_map(sel_test_raw)
+    final_summary = summary_map(sel_test_final)
+
+    final_compare = {}
+    for market in order:
+        a, r, f = v1_summary[market], raw_summary[market], final_summary[market]
+        decisions[market].update({
+            'label': f['label'],
+            'final_test_brier_v1': a['brier'],
+            'final_test_brier_raw': r['brier'],
+            'final_test_brier': f['brier'],
+            'final_test_brier_gain': None if a['brier'] is None or f['brier'] is None else a['brier'] - f['brier'],
+            'final_test_accuracy_v1': a['accuracy'],
+            'final_test_accuracy': f['accuracy'],
+        })
+        final_compare[market] = {
+            'label': f['label'], 'n': min(a['n'], f['n']),
+            'selected_source': selected_source[market],
+            'calibration_enabled': bool(calibration_fit_final[market]),
+            'accuracy_v1': a['accuracy'], 'accuracy_select': f['accuracy'],
+            'accuracy_delta': None if a['accuracy'] is None or f['accuracy'] is None else f['accuracy'] - a['accuracy'],
+            'brier_v1': a['brier'], 'brier_raw_select': r['brier'], 'brier_select': f['brier'],
+            'brier_gain': None if a['brier'] is None or f['brier'] is None else a['brier'] - f['brier'],
+        }
+
+    # Line tests use the selected raw market model. Calibration is not borrowed across lines.
+    v1_lines, sel_lines = empty_lines(), empty_lines()
+    dummy_v1, dummy_sel = empty_markets(), empty_markets()
+    rows_out = []
+    for row in test:
+        p1 = row['predictions']['v1']
+        e1 = _evaluate_model_prediction(p1, row['hs'], row['aas'], row['hg'], row['ag'], row['regulation'], dummy_v1, v1_lines)
+        e_sel = _fill_market_specific_model(row, weights_by_market, dummy_sel, sel_lines)
+        conf = e_sel['h2h_conf']
+        fit = calibration_fit_final['h2h']
+        if fit:
+            conf = _clip(fit['intercept'] + fit['slope'] * conf, .01, .99)
+        psel = e_sel['h2h_prediction']
+        rows_out.append({
+            'date': row['date'], 'matchup': row['matchup'],
+            'actual_shots': f"{int(row['hs'])}:{int(row['aas'])}",
+            'expected_shots_v1': f"{p1['home_shots']:.1f}:{p1['away_shots']:.1f}",
+            'expected_shots_select_h2h': f"{psel['home_shots']:.1f}:{psel['away_shots']:.1f}",
+            'h2h_pick_v1': row['home'] if e1['pick_home'] else row['away'],
+            'h2h_probability_v1': e1['h2h_conf'], 'h2h_correct_v1': bool(e1['h2h_ok']),
+            'h2h_pick_select': row['home'] if e_sel['pick_home'] else row['away'],
+            'h2h_probability_select': conf, 'h2h_correct_select': bool(e_sel['h2h_ok']),
+        })
+
+    dates = lambda rows: [x['date'] for x in rows]
+    return {
+        'available': True,
+        'train_n': len(train), 'validation_n': len(validation), 'test_n': len(test),
+        'train_from': min(dates(train)), 'train_to': max(dates(train)),
+        'validation_from': min(dates(validation)), 'validation_to': max(dates(validation)),
+        'test_from': min(dates(test)), 'test_to': max(dates(test)),
+        'min_model_gain': min_model_gain, 'min_calibration_gain': min_cal_gain,
+        'decisions': decisions,
+        'grid_tested_total': total_tested,
+        'final_compare': final_compare,
+        'final_models': {
+            'v1': {'markets': v1_summary, 'lines': _line_summaries(v1_lines)},
+            'select': {'markets': final_summary, 'raw_markets': raw_summary, 'lines': _line_summaries(sel_lines)},
+        },
+        'final_games': list(reversed(rows_out)),
+    }
+
 def run_backtest(team, season_start, game_limit=10):
     started = time.time()
     targets = _prepare_backtest_targets(team, season_start, game_limit)
@@ -1350,18 +1580,22 @@ def run_backtest(team, season_start, game_limit=10):
     factor_summary['avg_travel_km'] = sum(travel_vals)/len(travel_vals) if travel_vals else None
 
     model4 = _model4_train_test(tuning_rows, empty_markets, empty_lines)
+    model5 = _model5_select(tuning_rows, empty_markets, empty_lines)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
-        'season': _season_id(season_start), 'requested_games': game_limit,
+        'season': '+'.join(_season_id(x) for x in season_start) if isinstance(season_start, (list, tuple)) else _season_id(season_start),
+        'season_label': ' + '.join(f'{x}/{str(x+1)[2:]}' for x in season_start) if isinstance(season_start, (list, tuple)) else f'{season_start}/{str(season_start+1)[2:]}',
+        'season_components': [_season_id(x) for x in season_start] if isinstance(season_start, (list, tuple)) else [_season_id(season_start)],
+        'requested_games': game_limit,
         'evaluated_games': len(game_rows), 'skipped_games': skipped,
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'games': game_rows,
-        'warning': ('0.15 přidává Model 4 s vlastními vahami faktorů pro každý trh. Váhy se hledají pouze na starších 60 % zápasů a finálně se hodnotí '
-                    'na novějších 40 %, které výběr vah neviděl. Kalibrace Modelu 4 se také učí jen na train části. Živá Analýza '
-                    'stále používá Model 1, dokud tržně specifický Model 4 neprokáže stabilní league-wide zlepšení na větším vzorku. Historické kurzy bookmakerů nejsou součástí backtestu.'),
+        'model4': model4, 'model5': model5, 'games': game_rows,
+        'warning': ('0.16 přidává Model 5 Select: starších 50 % ladí váhy, prostředních 25 % rozhoduje, zda nový faktor a kalibrace vůbec smějí projít, a nejnovějších 25 % zůstává nedotčený finální test. '
+                    'Multi-season režim bere vyvážený vzorek z 2024/25 a 2025/26, takže starší sezóna nemůže být vytlačena novější. Živá Analýza '
+                    'stále používá Model 1, dokud výběrový model neprokáže stabilní zlepšení na finálním testu a napříč sezonami. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -1383,7 +1617,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.15', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.16', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -1406,12 +1640,16 @@ class Handler(SimpleHTTPRequestHandler):
             games = 10
         if team != 'ALL' and team not in TEAM_NICK:
             return self.respond(400, {'error': 'Neplatný tým pro backtest'})
-        if not re.fullmatch(r'20\d{6}', raw_season):
-            return self.respond(400, {'error': 'Neplatná sezóna'})
-        start = int(raw_season[:4])
-        if raw_season != _season_id(start):
-            return self.respond(400, {'error': 'Sezóna musí mít tvar 20252026'})
-        games = max(5, min(300 if team == 'ALL' else 60, games))
+        if raw_season == 'MULTI':
+            start = (2024, 2025)
+            games = max(100, min(600 if team == 'ALL' else 120, games))
+        else:
+            if not re.fullmatch(r'20\d{6}', raw_season):
+                return self.respond(400, {'error': 'Neplatná sezóna'})
+            start = int(raw_season[:4])
+            if raw_season != _season_id(start):
+                return self.respond(400, {'error': 'Sezóna musí mít tvar 20252026'})
+            games = max(5, min(300 if team == 'ALL' else 60, games))
         try:
             result = run_backtest(team, start, games)
             return self.respond(200, result, cache='no-store')
