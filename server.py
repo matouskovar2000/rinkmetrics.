@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.18 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.19 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -161,7 +161,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.18',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.19',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,7 +188,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.18', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.19', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -528,8 +528,19 @@ def _profile_inputs(home, away, game_date):
         shoot = _clip(.70 * (goals / shots) + .30 * .10, .055, .155)
         concede = _clip(.70 * (ga / allowed) + .30 * .10, .055, .155)
         goal_share = goals / max(.2, goals + ga)
+        recent = rows[:min(10, len(rows))]
+        recent_shots = _avg(recent, 'shots')
+        recent_allowed = _avg(recent, 'allowed')
+        recent_pace = recent_shots + recent_allowed
+        totals = [float(r['shots']) + float(r['allowed']) for r in rows]
+        mean_total = sum(totals) / len(totals)
+        total_sd = math.sqrt(sum((x - mean_total) ** 2 for x in totals) / max(1, len(totals)))
+        win_rate = sum(float(r['goals']) > float(r['ga']) for r in rows) / len(rows)
         return {'shots': shots, 'allowed': allowed, 'pace': pace, 'share': share,
-                'shoot': shoot, 'concede': concede, 'goal_share': goal_share}
+                'shoot': shoot, 'concede': concede, 'goal_share': goal_share,
+                'shot_diff': shots - allowed, 'goal_diff': goals - ga, 'win_rate': win_rate,
+                'recent_shots': recent_shots, 'recent_allowed': recent_allowed,
+                'recent_pace': recent_pace, 'total_sd': total_sd}
 
     return base, stats(rh), stats(ra)
 
@@ -598,6 +609,112 @@ def _predict_game_profile(home, away, game_date):
     return dict(base, home_shots=hs, away_shots=aas, home_goals=gh, away_goals=ga,
                 profile={'pace_factor': pace_factor, 'home_shot_share': share,
                          'home_shoot_rate': home_rate, 'away_shoot_rate': away_rate})
+
+def _predict_game_h2h_edge(home, away, game_date):
+    """0.19 specialist for 'více střel'.
+
+    Keeps Model 1's total-shot level but reallocates it using long-run shot share
+    and shot differential. This targets which team owns more of the shot volume,
+    rather than trying to improve every market with the same correction.
+    """
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    total = base['home_shots'] + base['away_shots']
+    base_share = base['home_shots'] / max(1.0, total)
+    diff_edge = h['shot_diff'] - a['shot_diff']
+    share_edge = h['share'] - a['share']
+    specialist_share = _clip(.5 + .55 * share_edge + .010 * diff_edge, .38, .62)
+    share = _clip(.72 * base_share + .28 * specialist_share, .36, .64)
+    return dict(base,
+                home_shots=_clip(total * share, 10.0, 50.0),
+                away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
+                profile={'specialist': 'h2h_edge', 'home_shot_share': share})
+
+
+def _predict_game_team_matchup(home, away, game_date):
+    """0.19 specialist for team-shot lines.
+
+    Explicitly matches each offense to the opponent's shot-suppression profile,
+    with a smaller recent-10 matchup component. The blend is deliberately
+    conservative so a noisy 10-game run cannot replace the 30-game baseline.
+    """
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    mid = (h['shots'] + h['allowed'] + a['shots'] + a['allowed']) / 4.0
+    h_match = h['shots'] + a['allowed'] - mid
+    a_match = a['shots'] + h['allowed'] - mid
+    recent_mid = (h['recent_shots'] + h['recent_allowed'] + a['recent_shots'] + a['recent_allowed']) / 4.0
+    h_recent = h['recent_shots'] + a['recent_allowed'] - recent_mid
+    a_recent = a['recent_shots'] + h['recent_allowed'] - recent_mid
+    hs = _clip(.68 * base['home_shots'] + .24 * h_match + .08 * h_recent, 10.0, 50.0)
+    aas = _clip(.68 * base['away_shots'] + .24 * a_match + .08 * a_recent, 10.0, 50.0)
+    return dict(base, home_shots=hs, away_shots=aas,
+                profile={'specialist': 'team_matchup', 'home_matchup': h_match, 'away_matchup': a_match})
+
+
+def _predict_game_total_specialist(home, away, game_date):
+    """0.19 specialist for total shots.
+
+    Uses joint long-term + recent pace for the mean and carries an observed
+    pre-game volatility estimate. The volatility is used only by the total-shot
+    reference market in backtesting; it does not leak future outcomes.
+    """
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    total0 = base['home_shots'] + base['away_shots']
+    long_pace = (h['pace'] + a['pace']) / 2.0
+    recent_pace = (h['recent_pace'] + a['recent_pace']) / 2.0
+    total = _clip(.62 * total0 + .25 * long_pace + .13 * recent_pace, 35.0, 85.0)
+    share = base['home_shots'] / max(1.0, total0)
+    sigma = _clip((h['total_sd'] + a['total_sd']) / 2.0, 5.0, 12.0)
+    return dict(base,
+                home_shots=_clip(total * share, 10.0, 50.0),
+                away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
+                total_sigma=sigma,
+                profile={'specialist': 'total_pace_volatility', 'total_sigma': sigma, 'total_mean': total})
+
+
+def _predict_game_winner_strength(home, away, game_date):
+    """0.19 specialist for regulation 1/X/2.
+
+    Separates result strength from shot markets using pre-game goal differential,
+    shot differential and long-run win rate. It adjusts the goal *difference*
+    while mostly preserving Model 1's expected total goals.
+    """
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    total_goals = base['home_goals'] + base['away_goals']
+    base_diff = base['home_goals'] - base['away_goals']
+    strength_diff = (.45 * (h['goal_diff'] - a['goal_diff'])
+                     + .055 * (h['shot_diff'] - a['shot_diff'])
+                     + .90 * (h['win_rate'] - a['win_rate']))
+    diff = _clip(.72 * base_diff + .28 * strength_diff, -3.5, 3.5)
+    gh = _clip((total_goals + diff) / 2.0, .2, 8.0)
+    ga = _clip((total_goals - diff) / 2.0, .2, 8.0)
+    return dict(base, home_goals=gh, away_goals=ga,
+                profile={'specialist': 'winner_strength', 'strength_diff': strength_diff})
+
+
+def _normal_line_pick_row(expected, actual, line, sigma):
+    sigma = max(.5, float(sigma))
+    # P(X > line) under a normal approximation with pre-game estimated sigma.
+    p_over = .5 * math.erfc((float(line) - float(expected)) / (sigma * math.sqrt(2.0)))
+    p_over = _clip(p_over, .01, .99)
+    choose_over = p_over >= .5
+    conf = p_over if choose_over else 1.0 - p_over
+    actual_over = actual > line
+    return {'p': conf, 'y': 1 if choose_over == actual_over else 0,
+            'side': 'over' if choose_over else 'under',
+            'actual': 'over' if actual_over else 'under'}
+
 
 def _poisson(lam, max_n=135):
     p = math.exp(-lam)
@@ -1143,7 +1260,10 @@ def _market_prediction_rows(prediction, row, market):
             _line_pick_row(prediction['away_shots'], aas, 27.5),
         ]
     if market == 'total':
-        return [_line_pick_row(prediction['home_shots'] + prediction['away_shots'], hs + aas, 56.5)]
+        expected_total = prediction['home_shots'] + prediction['away_shots']
+        if prediction.get('total_sigma') is not None:
+            return [_normal_line_pick_row(expected_total, hs + aas, 56.5, prediction['total_sigma'])]
+        return [_line_pick_row(expected_total, hs + aas, 56.5)]
     if market == 'goals':
         return [_line_pick_row(prediction['home_goals'] + prediction['away_goals'], hg + ag, 5.5, 55)]
     if market == 'winner' and regulation:
@@ -1393,6 +1513,172 @@ def _model7_walk_forward(tuning_rows):
         'note': ('Každý fold používá pouze starší zápasy k výběru zdroje a kalibraci. '
                  'Profil je označen jako stabilní jen při kladném průměrném Brier zisku a zlepšení alespoň v 60 % forward foldů.'),
     }
+
+def _model8_specialists_walk_forward(tuning_rows):
+    """0.19 walk-forward test of market-specific specialist models.
+
+    Four markets get genuinely different candidate information:
+      h2h    -> shot-share + shot-differential edge,
+      team   -> offense vs opponent suppression matchup,
+      total  -> joint pace + pre-game volatility,
+      winner -> goal/shot differential + long-run win rate.
+    Goals keep the already-promising efficiency/profile candidates as a control.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    labels = {
+        'v1': 'Model 1', 'share': 'Shot-share profil', 'pace': 'Tempo střel',
+        'efficiency': 'Efektivita střel / inkasování', 'profile': 'Kombinovaný profil',
+        'h2h_edge': 'Shot edge specialist', 'team_matchup': 'Útok vs. potlačení střel',
+        'total_specialist': 'Tempo + variabilita', 'winner_strength': 'Výkonnostní 1/X/2 profil',
+    }
+    market_labels = {
+        'h2h': 'Více střel', 'team': 'Střely týmu ±', 'total': 'Celkové střely ±',
+        'goals': 'Góly ± (kontrola)', 'winner': 'Vítěz 1/X/2',
+    }
+    candidates = {
+        'h2h': ('v1', 'h2h_edge', 'share'),
+        'team': ('v1', 'team_matchup', 'share'),
+        'total': ('v1', 'total_specialist', 'pace'),
+        'goals': ('v1', 'efficiency', 'profile'),
+        'winner': ('v1', 'winner_strength', 'efficiency'),
+    }
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 180:
+        return {'available': False, 'reason': 'Model 8 Specialists potřebuje alespoň 180 vyhodnocených zápasů.'}
+
+    fold_count = 5 if n >= 500 else 4 if n >= 300 else 3
+    warmup_n = max(90, n // 2)
+    remaining = n - warmup_n
+    fold_size = max(20, remaining // fold_count)
+    min_train_gain = 0.0005
+    min_stable_gain = 0.0005
+
+    stability = {m: {src: [] for src in candidates[m] if src != 'v1'} for m in order}
+    selector_rows = {m: {'v1': [], 'raw': [], 'cal': []} for m in order}
+    selector_fold_gains = {m: [] for m in order}
+    calibration_fold_gains = {m: [] for m in order}
+    selector_sources = {m: {} for m in order}
+    folds_out = []
+
+    start = warmup_n
+    for fold_index in range(fold_count):
+        end = n if fold_index == fold_count - 1 else min(n, start + fold_size)
+        if end <= start:
+            break
+        train = ordered[:start]
+        test = ordered[start:end]
+        fold_market = {}
+        for market in order:
+            train_v1 = _collect_source_market(train, market, 'v1')
+            test_v1 = _collect_source_market(test, market, 'v1')
+            b_train_v1 = _market_brier(train_v1)
+            b_test_v1 = _market_brier(test_v1)
+
+            for source in candidates[market]:
+                if source == 'v1':
+                    continue
+                test_src = _collect_source_market(test, market, source)
+                b_src = _market_brier(test_src)
+                gain = None if b_test_v1 is None or b_src is None else b_test_v1 - b_src
+                stability[market][source].append({
+                    'fold': fold_index + 1, 'n': len(test_src), 'gain': gain,
+                    'brier_v1': b_test_v1, 'brier_source': b_src,
+                })
+
+            train_scores = []
+            for source in candidates[market]:
+                rows = _collect_source_market(train, market, source)
+                train_scores.append((source, _market_brier(rows)))
+            valid = [x for x in train_scores if x[1] is not None]
+            best_source, best_brier = min(valid, key=lambda x: x[1]) if valid else ('v1', b_train_v1)
+            train_gain = None if b_train_v1 is None or best_brier is None else b_train_v1 - best_brier
+            selected = best_source if best_source != 'v1' and train_gain is not None and train_gain >= min_train_gain else 'v1'
+            selector_sources[market][selected] = selector_sources[market].get(selected, 0) + 1
+
+            raw_test = _collect_source_market(test, market, selected)
+            b_raw = _market_brier(raw_test)
+            raw_gain = None if b_test_v1 is None or b_raw is None else b_test_v1 - b_raw
+            selector_fold_gains[market].append(raw_gain)
+
+            train_selected = _collect_source_market(train, market, selected)
+            fit = _fit_affine(train_selected)
+            cal_test = _apply_affine(raw_test, fit) if fit else [dict(x) for x in raw_test]
+            b_cal = _market_brier(cal_test)
+            cal_gain = None if b_raw is None or b_cal is None else b_raw - b_cal
+            calibration_fold_gains[market].append(cal_gain)
+
+            selector_rows[market]['v1'].extend(test_v1)
+            selector_rows[market]['raw'].extend(raw_test)
+            selector_rows[market]['cal'].extend(cal_test)
+            fold_market[market] = {
+                'selected_source': selected, 'selected_label': labels[selected],
+                'train_gain': train_gain, 'raw_gain': raw_gain, 'calibration_gain': cal_gain,
+                'n': len(raw_test),
+            }
+
+        folds_out.append({
+            'fold': fold_index + 1, 'train_n': len(train), 'test_n': len(test),
+            'train_from': train[0]['date'], 'train_to': train[-1]['date'],
+            'test_from': test[0]['date'], 'test_to': test[-1]['date'],
+            'markets': fold_market,
+        })
+        start = end
+        if start >= n:
+            break
+
+    actual_folds = len(folds_out)
+    required_positive = max(2, math.ceil(actual_folds * .60)) if actual_folds else 0
+    stability_summary = {}
+    for market in order:
+        rows = []
+        for source, fold_rows in stability[market].items():
+            gains = [x['gain'] for x in fold_rows if x['gain'] is not None]
+            mean_gain = sum(gains) / len(gains) if gains else None
+            worst_gain = min(gains) if gains else None
+            positive = sum(g > 0 for g in gains)
+            eligible = bool(gains and len(gains) == actual_folds and positive >= required_positive and
+                            mean_gain is not None and mean_gain >= min_stable_gain and
+                            (worst_gain is None or worst_gain > -0.010))
+            rows.append({
+                'source': source, 'label': labels[source], 'folds': len(gains),
+                'positive_folds': positive, 'mean_gain': mean_gain, 'worst_gain': worst_gain,
+                'eligible': eligible, 'total_n': sum(x['n'] for x in fold_rows),
+            })
+        rows.sort(key=lambda x: (x['mean_gain'] is None, -(x['mean_gain'] or 0.0)))
+        stability_summary[market] = {'label': market_labels[market], 'profiles': rows}
+
+    selector_summary = {}
+    for market in order:
+        v1_rows, raw_rows, cal_rows = (selector_rows[market][k] for k in ('v1','raw','cal'))
+        b_v1, b_raw, b_cal = _market_brier(v1_rows), _market_brier(raw_rows), _market_brier(cal_rows)
+        raw_gain = None if b_v1 is None or b_raw is None else b_v1 - b_raw
+        cal_vs_raw = None if b_raw is None or b_cal is None else b_raw - b_cal
+        final_gain = None if b_v1 is None or b_cal is None else b_v1 - b_cal
+        raw_fold = [g for g in selector_fold_gains[market] if g is not None]
+        cal_fold = [g for g in calibration_fold_gains[market] if g is not None]
+        positive_raw = sum(g > 0 for g in raw_fold)
+        positive_cal = sum(g > 0 for g in cal_fold)
+        eligible_raw = bool(raw_fold and positive_raw >= required_positive and raw_gain is not None and raw_gain >= min_stable_gain)
+        eligible_cal = bool(cal_fold and positive_cal >= required_positive and cal_vs_raw is not None and cal_vs_raw >= min_stable_gain)
+        selector_summary[market] = {
+            'label': market_labels[market], 'n': len(raw_rows), 'source_counts': selector_sources[market],
+            'brier_v1': b_v1, 'brier_raw': b_raw, 'brier_calibrated': b_cal,
+            'raw_brier_gain': raw_gain, 'calibration_brier_gain': cal_vs_raw, 'final_brier_gain': final_gain,
+            'positive_raw_folds': positive_raw, 'positive_calibration_folds': positive_cal,
+            'folds': actual_folds, 'eligible_raw': eligible_raw, 'eligible_calibration': eligible_cal,
+        }
+
+    return {
+        'available': True, 'fold_count': actual_folds, 'warmup_n': warmup_n,
+        'first_test_from': folds_out[0]['test_from'] if folds_out else None,
+        'last_test_to': folds_out[-1]['test_to'] if folds_out else None,
+        'required_positive_folds': required_positive, 'min_stable_gain': min_stable_gain,
+        'selector': selector_summary, 'stability': stability_summary, 'folds': folds_out,
+        'note': ('0.19 testuje pro každý trh vlastní specialistu. Góly zůstávají kontrolním trhem s profily z 0.18. '
+                 'Stabilní = kladný průměrný Brier zisk a zlepšení alespoň v 60 % forward období.'),
+    }
+
 
 def _model6_profiles(tuning_rows, empty_markets, empty_lines):
     """0.17: select genuinely different information by market.
@@ -1892,6 +2178,10 @@ def run_backtest(team, season_start, game_limit=10):
         'share': ('Shot-share profil', 'Rozdělení očekávaných střel podle dlouhodobého podílu střel pro/proti', _predict_game_share),
         'efficiency': ('Efektivita střel / inkasování', 'Gólový profil ze střel, shooting% a inkasované efektivity se shrinkage', _predict_game_efficiency),
         'profile': ('Kombinovaný profil', 'Tempo + shot share pro střely a efektivita střel pro góly', _predict_game_profile),
+        'h2h_edge': ('Shot edge specialist', 'Více střel: shot share + dlouhodobý rozdíl vytvořených/povolených střel', _predict_game_h2h_edge),
+        'team_matchup': ('Útok vs. potlačení střel', 'Týmové střely: konkrétní útok proti schopnosti soupeře střely potlačovat', _predict_game_team_matchup),
+        'total_specialist': ('Tempo + variabilita', 'Celkové střely: společné tempo, recent tempo a předzápasová variabilita', _predict_game_total_specialist),
+        'winner_strength': ('Výkonnostní 1/X/2 profil', '1/X/2: gólový rozdíl + shot edge + dlouhodobá výsledková síla', _predict_game_winner_strength),
     }
     stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
     game_rows, factor_rows, tuning_rows = [], [], []
@@ -2012,6 +2302,7 @@ def run_backtest(team, season_start, game_limit=10):
     model5 = _model5_select(tuning_rows, empty_markets, empty_lines)
     model6 = _model6_profiles(tuning_rows, empty_markets, empty_lines)
     model7 = _model7_walk_forward(tuning_rows)
+    model8 = _model8_specialists_walk_forward(tuning_rows)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -2023,10 +2314,10 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'games': game_rows,
-        'warning': ('0.18 přidává Model 7 Walk-forward: novější polovinu historie dělí do několika po sobě jdoucích forward foldů. V každém foldu se model i kalibrace učí výhradně ze starších zápasů a hodnotí se na bezprostředně následujícím bloku. '
-                    'Nový profil je považovaný za stabilní jen tehdy, když zlepšuje průměrný Brier a pomáhá alespoň v 60 % forward období. Model 6 Profiles zůstává jako diagnostika nových informací. Multi-season režim je vyvážený mezi sezonami. Živá Analýza '
-                    'stále používá Model 1, dokud nový trh neprokáže opakované out-of-sample zlepšení. Historické kurzy bookmakerů nejsou součástí backtestu.'),
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'games': game_rows,
+        'warning': ('0.19 přidává Model 8 Specialists: více střel dostává shot-edge profil, týmové střely matchup útoku proti potlačení střel, celkové střely tempo + variabilitu a 1/X/2 samostatný výkonnostní profil. '
+                    'Každý specialista se znovu ověřuje walk-forward pouze na budoucích blocích. Góly dál kontrolují stabilní efficiency/profile směr z 0.18. Model 7 zůstává jako srovnávací diagnostika. '
+                    'Multi-season režim je vyvážený mezi sezonami. Živá Analýza stále používá Model 1, dokud nový trh neprokáže opakované out-of-sample zlepšení. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -2048,7 +2339,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.18', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.19', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)

@@ -1,26 +1,21 @@
-# NHL Team Shots Analyzer 0.18
+# NHL Team Shots Analyzer 0.19
 
-Verze 0.18 přidává **Model 7 Walk-forward**, který testuje stabilitu modelu v čase. Cílem není najít jednu šťastnou validation periodu, ale ověřit, zda nový profil pomáhá opakovaně v několika po sobě jdoucích obdobích.
+Verze 0.19 přidává **Model 8 Specialists**. Po výsledcích walk-forward validace už se nesnažíme vylepšit všechny trhy jedním univerzálním faktorem. Čtyři problematické trhy dostávají vlastní předzápasový model a každý se ověřuje v několika navazujících časových blocích.
 
-## Co je nové
-- Multi-season league-wide backtest až na **600 zápasech**.
-- U 600 zápasů se starší polovina použije jako počáteční historie a novější polovina se rozdělí do **5 chronologických forward foldů**.
-- V každém foldu se zdroj modelu vybírá pouze podle zápasů, které už byly v té chvíli v minulosti.
-- Testují se samostatně profily z 0.17: **tempo střel**, **shot share**, **efektivita střel/inkasování** a **kombinovaný profil**.
-- U každého trhu se ukazuje, v kolika forward obdobích profil zlepšil Brier score, jeho průměrný zisk a nejhorší období.
-- Profil je označen jako **STABILNÍ** pouze tehdy, když má kladný průměrný Brier zisk a pomáhá alespoň v 60 % forward foldů.
-- Kalibrace se v každém foldu učí pouze na starší historii a její přínos se reportuje odděleně.
+## Nové specialisty
+- **Více střel:** `Shot edge specialist` kombinuje shot share a dlouhodobý rozdíl vytvořených/povolených střel. Celkový objem střel drží blízko Modelu 1 a mění hlavně rozdělení mezi týmy.
+- **Střely týmu ±:** `Útok vs. potlačení střel` modeluje konkrétní útok proti tomu, kolik střel soupeř běžně povoluje. Menší část bere z posledních 10 zápasů, ale většina zůstává na 30zápasovém základu.
+- **Celkové střely ±:** `Tempo + variabilita` kombinuje dlouhodobé i recent tempo obou týmů a přidává předzápasový odhad variability celkového počtu střel.
+- **Vítěz 1/X/2:** `Výkonnostní 1/X/2 profil` používá gólový rozdíl, shot edge a dlouhodobou výsledkovou sílu k úpravě očekávaného rozdílu gólů.
+- **Góly ±:** zůstávají jako kontrolní trh s `Efektivitou střel / inkasování` a `Kombinovaným profilem`, protože právě tam Model 7 našel první stabilní signál.
 
-## Jak výsledek číst
-Nejdůležitější jsou dvě nové sekce:
+## Validace
+Model 8 používá stejný walk-forward princip jako 0.18. U 600 zápasů se starší polovina použije jako počáteční historie a novější polovina se rozdělí do 5 po sobě jdoucích forward foldů. V každém foldu se zdroj modelu i kalibrace učí pouze ze starších zápasů.
 
-1. **Model 7 Walk-forward · stabilita v čase** – ukazuje reálný výsledek train-only selektoru v navazujících časových blocích.
-2. **Model 7 Walk-forward · které profily jsou stabilní** – ukazuje každý profil samostatně a kolikrát skutečně pomohl v budoucím období.
-
-Kladný Brier zisk znamená lepší pravděpodobnosti než Model 1. Samotná vyšší úspěšnost nestačí.
+Specialista je označen jako **STABILNÍ**, jen pokud má kladný průměrný Brier zisk, zlepší alespoň 60 % forward foldů a nemá extrémně špatný nejhorší fold. Živá Analýza stále používá Model 1; žádný experimentální specialista se do ní nepřenáší automaticky.
 
 ## Doporučený test
 `Celá NHL` → `2024/25 + 2025/26` → `600 zápasů`.
 
 ## Omezení
-Živá Analýza stále používá Model 1. Model 7 je validační laboratoř a nic automaticky nepřepíná do živého modelu. Historické bookmakerové kurzy nejsou součástí backtestu, takže z výsledků nelze přímo počítat historické EV nebo ROI. Sestavy, zranění a potvrzení brankáře zatím nejsou číselnou korekcí modelu.
+Backtest nepoužívá historické bookmakerové kurzy, takže neprokazuje historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí modelu. Výsledky jsou analytická validace modelu, ne sázkové doporučení.
