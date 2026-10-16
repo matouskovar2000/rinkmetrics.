@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NHL Team Shots Analyzer 0.16</title>
+<title>NHL Team Shots Analyzer 0.17</title>
 <style>
 :root{
   color-scheme:dark;--bg:#07101a;--bg2:#0a1522;--panel:#0d1b2a;--panel2:#101f31;
@@ -41,7 +41,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.16</div></div></div>
+    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.17</div></div></div>
     <nav class="nav"><button id="navAnalysis" class="active">▥ Analýza</button><button id="navBacktest">⌁ Backtest</button><button id="navTips">↻ Moje tipy</button></nav>
   </header>
 
@@ -143,18 +143,21 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
   <main id="backtestPage" hidden>
     <section class="selector">
       <div class="sectionTitle">Historický backtest <span class="betaTag">BETA</span></div>
-      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.16 učí <strong>jiné váhy faktorů pro každý trh</strong> na starších 60 % zápasů a hodnotí je na novějších 40 %, které ladění nevidělo.</div>
+      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.17 testuje <strong>jiné nové informace pro různé trhy</strong>: tempo střel, shot share a efektivitu zakončení/inkasování. Train vybere kandidáta, validation rozhodne, zda smí nahradit Model 1, a finální test zůstává nedotčený.</div>
       <div class="backtestControls">
         <div><label>Rozsah / tým</label><select id="btTeam"></select></div>
         <div><label>Sezóna</label><select id="btSeason"><option value="MULTI" selected>2024/25 + 2025/26</option><option value="20252026">2025/26</option><option value="20242025">2024/25</option><option value="20262027">2026/27</option></select></div>
         <div><label>Počet zápasů</label><select id="btGames"><option value="20">20</option><option value="50">50</option><option value="100">100</option><option value="200">200</option><option value="300" selected>300</option><option value="400">400</option><option value="600">600</option></select></div>
         <button id="runBacktest" class="run">Spustit backtest</button>
       </div>
-      <div id="btStatus" class="status">Pro Model 5 doporučuji „Celá NHL“ + „2024/25 + 2025/26“ + 300 až 600 zápasů. Multi-season režim bere vyvážený vzorek z obou sezon.</div>
+      <div id="btStatus" class="status">Pro Model 6 doporučuji „Celá NHL“ + „2024/25 + 2025/26“ + 300 až 600 zápasů. 600 dává silnější finální test; 300 je rychlá kontrola.</div>
     </section>
     <section id="btResults" hidden class="dashboard" style="grid-template-columns:1fr">
       <article class="card"><div class="cardTitle">Souhrn validace</div><div id="btSummary" class="btSummary"></div><div id="btModel" class="note"></div><div id="btFactors" class="factorChips"></div></article>
       <article class="card"><div class="cardTitle">Ablace faktorů: co opravdu pomáhá</div><div id="btAblation" class="btAblation"></div><div class="micro" style="margin-top:8px">Každý řádek mění proti Modelu 1 jen uvedený faktor. Kladný Brier zisk znamená lepší pravděpodobnosti. Zeleně je nejlepší varianta daného trhu.</div></article>
+      <article class="card"><div class="cardTitle">Model 6 Profiles · nové informace podle trhu</div><div id="btM6Meta" class="factorChips"></div><div class="tableWrap" id="btM6Decisions" style="margin-top:9px"></div><div class="micro" style="margin-top:8px">Train porovnává Model 1 s tempem střel, shot-share profilem, efektivitou a kombinovaným profilem. Validation rozhoduje, zda vítěz smí do finálního testu.</div></article>
+      <article class="card"><div class="cardTitle">Model 6 Profiles · nedotčený finální test</div><div class="tableWrap" id="btM6Compare"></div><div class="micro" style="margin-top:8px">Hlavní tabulka 0.17. Kladný Brier zisk na nejnovějších datech znamená, že nový typ informace skutečně přidal hodnotu proti Modelu 1.</div></article>
+      <article class="card"><div class="cardTitle">Model 6 Profiles · hranice na finálním testu</div><div id="btM6Lines" class="btLineGrid"></div></article>
       <article class="card"><div class="cardTitle">Model 5 Select · výběr bez úniku do finálního testu</div><div id="btM5Meta" class="factorChips"></div><div class="tableWrap" id="btM5Decisions" style="margin-top:9px"></div><div class="micro" style="margin-top:8px">Train ladí váhy, validation rozhoduje M1 vs. M4 a zda povolit kalibraci. Finální test se do těchto rozhodnutí vůbec nepoužívá.</div></article>
       <article class="card"><div class="cardTitle">Model 5 Select · nedotčený finální test</div><div class="tableWrap" id="btM5Compare"></div><div class="micro" style="margin-top:8px">Tohle je hlavní rozhodovací tabulka 0.16. Kladný Brier zisk znamená lepší pravděpodobnosti než Model 1 na nejnovějších datech.</div></article>
       <article class="card"><div class="cardTitle">Model 5 Select · hranice na finálním testu</div><div id="btM5Lines" class="btLineGrid"></div></article>
@@ -171,7 +174,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
     </section>
   </main>
 
-  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Živá Analýza zatím používá Model 1. Verze 0.16 v Backtestu ladí samostatné váhy faktorů pro každý z pěti trhů pouze na starších datech a ověřuje je na novějším holdoutu. Do hlavní Analýzy se Model 4 nepřepne bez stabilního league-wide zlepšení. Sestavy a zranění zatím nejsou číselnou korekcí modelu.</div>
+  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Živá Analýza zatím používá Model 1. Verze 0.17 v Backtestu testuje nové profilové informace samostatně pro každý trh: tempo střel, shot share a efektivitu střel/inkasování. Do hlavní Analýzy se nic nepřepne bez zlepšení na validation i nedotčeném finálním testu. Sestavy a zranění zatím nejsou číselnou korekcí modelu.</div>
 </div>
 <script>
 const teams={ANA:'Anaheim Ducks',BOS:'Boston Bruins',BUF:'Buffalo Sabres',CGY:'Calgary Flames',CAR:'Carolina Hurricanes',CHI:'Chicago Blackhawks',COL:'Colorado Avalanche',CBJ:'Columbus Blue Jackets',DAL:'Dallas Stars',DET:'Detroit Red Wings',EDM:'Edmonton Oilers',FLA:'Florida Panthers',LAK:'Los Angeles Kings',MIN:'Minnesota Wild',MTL:'Montreal Canadiens',NSH:'Nashville Predators',NJD:'New Jersey Devils',NYI:'New York Islanders',NYR:'New York Rangers',OTT:'Ottawa Senators',PHI:'Philadelphia Flyers',PIT:'Pittsburgh Penguins',SEA:'Seattle Kraken',SJS:'San Jose Sharks',STL:'St. Louis Blues',TBL:'Tampa Bay Lightning',TOR:'Toronto Maple Leafs',UTA:'Utah Mammoth',VAN:'Vancouver Canucks',VGK:'Vegas Golden Knights',WSH:'Washington Capitals',WPG:'Winnipeg Jets'};
@@ -227,7 +230,7 @@ function renderBacktest(d){
   $('btResults').hidden=false;
   const scope=d.scope==='league'?'Celá NHL':teams[d.team]||d.team,v1=d.models?.v1,full=d.models?.full;
   $('btSummary').innerHTML=`<div class="btMetric"><span>Vyhodnocené zápasy</span><b>${d.evaluated_games}</b></div><div class="btMetric"><span>Rozsah</span><b>${safe(scope)}</b></div><div class="btMetric"><span>Sezóna</span><b>${safe(d.season_label||String(d.season))}</b></div><div class="btMetric"><span>Doba výpočtu</span><b>${safe(d.elapsed_seconds)} s</b></div>`;
-  $('btModel').innerHTML=`<strong>Model 1:</strong> ${safe(v1?.description||'—')}<br><strong>Full kandidát:</strong> ${safe(full?.description||'—')}<br><strong>0.16:</strong> Model 5 používá train / validation / finální test. Vše používá pouze předzápasovou historii. Přeskočeno: ${d.skipped_games}.`;
+  $('btModel').innerHTML=`<strong>Model 1:</strong> ${safe(v1?.description||'—')}<br><strong>Full kandidát:</strong> ${safe(full?.description||'—')}<br><strong>0.17:</strong> Model 6 testuje tempo / shot share / efektivitu po jednotlivých trzích a používá train / validation / finální test. Vše používá pouze předzápasovou historii. Přeskočeno: ${d.skipped_games}.`;
   const fs=d.factor_summary||{},chip=(label,value)=>`<span class="factorChip">${safe(label)}: <strong>${safe(value)}</strong></span>`;
   $('btFactors').innerHTML=[chip('B2B tým-zápasy',fs.b2b_team_games??'—'),chip('Prům. cestování',fs.avg_travel_km==null?'—':Math.round(fs.avg_travel_km)+' km'),chip('Prům. |kontext střel doma|',fs.home_context_shots?.mean_abs==null?'—':Number(fs.home_context_shots.mean_abs).toFixed(2)),chip('Prům. |kontext střel venku|',fs.away_context_shots?.mean_abs==null?'—':Number(fs.away_context_shots.mean_abs).toFixed(2))].join('');
   const order=['h2h','team','total','goals','winner'],cmp=d.comparison||{};
@@ -237,6 +240,21 @@ function renderBacktest(d){
   $('btAblation').innerHTML=order.map(k=>{const block=abl[k]||{},rows=block.rows||[];return `<div class="btAblationBlock"><h3>${safe(block.label||k)}</h3>${rows.length?'<table><thead><tr><th>Varianta</th><th>Úsp.</th><th>Brier</th><th>Zisk</th></tr></thead><tbody>'+rows.map(x=>`<tr class="${x.key===block.best_model?'bestRow':''}"><td>${safe(x.label)}</td><td>${btPct(x.accuracy)}</td><td>${btBrier(x.brier)}</td><td class="${(x.brier_gain??0)>0?'btCompareGood':(x.brier_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.brier_gain)}</td></tr>`).join('')+'</tbody></table>':'<div class="micro">Bez dat.</div>'}<div class="micro" style="margin-top:5px">Nejlepší: <strong>${safe(block.best_label||'—')}</strong></div></div>`}).join('');
 
   const lineNames={team:'Střely týmu',total:'Celkové střely',goals:'Góly'};
+  const m6=d.model6||{};
+  if(m6.available){
+    const dec6=m6.decisions||{},cmp6=m6.final_compare||{};
+    $('btM6Meta').innerHTML=[chip('Train / validation / test',`${m6.train_n} / ${m6.validation_n} / ${m6.test_n}`),chip('Train',`${m6.train_from} → ${m6.train_to}`),chip('Validation',`${m6.validation_from} → ${m6.validation_to}`),chip('Finální test',`${m6.test_from} → ${m6.test_to}`),chip('Min. zisk pro nový profil',btBrier(m6.min_model_gain)),chip('Min. zisk pro kalibraci',btBrier(m6.min_calibration_gain))].join('');
+    $('btM6Decisions').innerHTML='<table><thead><tr><th>Trh</th><th>Nejlepší na train</th><th>Vybráno po validation</th><th>Train zisk</th><th>Val. zisk</th><th>Kalibrace</th><th>Val. zisk kal.</th></tr></thead><tbody>'+order.map(k=>{const x=dec6[k]||{};return `<tr><td class="btMarketName">${safe(x.label||k)}</td><td>${safe(x.best_train_label||'—')}</td><td class="${x.selected_source&&x.selected_source!=='v1'?'btCompareGood':''}">${safe(x.selected_label||'Model 1')}</td><td class="${(x.train_brier_gain??0)>0?'btCompareGood':(x.train_brier_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.train_brier_gain)}</td><td class="${(x.validation_brier_gain??0)>0?'btCompareGood':(x.validation_brier_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.validation_brier_gain)}</td><td>${x.calibration_enabled?'ANO':'NE'}</td><td class="${(x.calibration_validation_gain??0)>0?'btCompareGood':(x.calibration_validation_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.calibration_validation_gain)}</td></tr>`}).join('')+'</tbody></table>';
+    $('btM6Compare').innerHTML='<table><thead><tr><th>Trh</th><th>N</th><th>Výběr</th><th>M1 úsp.</th><th>Profile úsp.</th><th>Δ</th><th>Brier M1</th><th>Brier Profile</th><th>Brier zisk</th></tr></thead><tbody>'+order.map(k=>{const x=cmp6[k]||{},cal=x.calibration_enabled?' + kal.':'';return `<tr><td class="btMarketName">${safe(x.label||k)}</td><td>${x.n??0}</td><td>${safe(x.selected_label||'Model 1')}${cal}</td><td>${btPct(x.accuracy_v1)}</td><td>${btPct(x.accuracy_select)}</td><td class="${(x.accuracy_delta??0)>0?'btCompareGood':(x.accuracy_delta??0)<0?'btCompareBad':'btNeutral'}">${signed(x.accuracy_delta)}</td><td>${btBrier(x.brier_v1)}</td><td>${btBrier(x.brier_select)}</td><td class="${(x.brier_gain??0)>0?'btCompareGood':(x.brier_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.brier_gain)}</td></tr>`}).join('')+'</tbody></table>';
+    const f6v1=m6.final_models?.v1,f6s=m6.final_models?.select;
+    $('btM6Lines').innerHTML=['team','total','goals'].map(k=>{const a=f6v1?.lines?.[k]||[],b=f6s?.lines?.[k]||[];const rows=b.map((x,idx)=>[a[idx]||{},x]);return `<div class="btLineBlock"><h3>${lineNames[k]}</h3>${rows.length?'<table><thead><tr><th>Hranice</th><th>N</th><th>Baseline</th><th>M1</th><th>Profile</th><th>Brier M1</th><th>Brier Profile</th><th>Skill</th></tr></thead><tbody>'+rows.map(([m1,mx])=>`<tr><td>${String(mx.line).replace('.',',')}</td><td>${mx.n}</td><td>${btPct(mx.baseline_accuracy)}</td><td>${btPct(m1.accuracy)}</td><td>${btPct(mx.accuracy)}</td><td>${btBrier(m1.brier)}</td><td>${btBrier(mx.brier)}</td><td class="${(mx.brier_skill??0)>0?'btCompareGood':(mx.brier_skill??0)<0?'btCompareBad':''}">${btPct(mx.brier_skill)}</td></tr>`).join('')+'</tbody></table>':'<div class="micro">Bez dat.</div>'}</div>`}).join('');
+  }else{
+    $('btM6Meta').innerHTML=chip('Model 6',m6.reason||'Málo dat');
+    $('btM6Decisions').innerHTML='<div class="micro">Pro Model 6 spusť alespoň 100 zápasů.</div>';
+    $('btM6Compare').innerHTML='<div class="micro">Bez finálního testu.</div>';
+    $('btM6Lines').innerHTML='<div class="micro">Bez finálního testu.</div>';
+  }
+
   const m5=d.model5||{};
   if(m5.available){
     const dec=m5.decisions||{},cmp5=m5.final_compare||{};

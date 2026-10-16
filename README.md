@@ -1,24 +1,23 @@
-# NHL Team Shots Analyzer 0.16
+# NHL Team Shots Analyzer 0.17
 
-Verze 0.16 přidává **Model 5 Select** a přísnější validaci. Cílem je zabránit tomu, aby se nový faktor nebo kalibrace dostaly do modelu jen proto, že náhodou vyšly dobře na stejném holdoutu, podle kterého jsme je vybrali.
+Verze 0.17 přidává **Model 6 Profiles**. Místo dalšího otáčení stejných vah testuje nové předzápasové informace a nechává každý trh vybrat jiný typ profilu.
 
-## Co je nové
-- Chronologické dělení dat na **50 % train / 25 % validation / 25 % finální test**.
-- Train část ladí samostatné váhy rychlé formy, síly soupeře a B2B/odpočinku/cestování pro každý z pěti trhů.
-- Validation část rozhodne, zda daný trh smí použít Model 4, nebo se má vrátit k Modelu 1.
-- Kalibrace se také povolí jen tehdy, když na validation části zlepší Brier score alespoň o minimální práh.
-- Nejnovějších 25 % zápasů zůstává **zcela nedotčený finální test**. Ten se nepoužívá pro výběr vah, modelu ani kalibrace.
-- Nový režim **2024/25 + 2025/26** bere vyvážený počet zápasů z obou sezon. Při 600 zápasech jde přibližně o 300 + 300, takže novější sezóna nevytlačí starší.
-- League-wide multi-season backtest lze spustit až na **600 zápasech**.
-- Výsledky ukazují pro každý trh vybraný model, povolenou/zakázanou kalibraci a skutečný Brier zisk na finálním testu.
+## Nové profilové signály
+- **Tempo střel**: kolik střel tým ve svých zápasech vytváří a povoluje dohromady; používá se hlavně jako kandidát pro celkové a týmové střely.
+- **Shot-share profil**: podíl střel pro / proti; kandidát hlavně pro „více střel“ a týmové střely.
+- **Efektivita střel / inkasování**: předzápasová shooting% a gólová efektivita soupeře se shrinkage k 10% prioru; kandidát pro góly a 1/X/2.
+- **Kombinovaný profil**: tempo + shot share pro očekávané střely a efektivita pro očekávané góly.
 
-## Jak Model 5 číst
-Nejdůležitější je sekce **Model 5 Select · nedotčený finální test**. Kladný Brier zisk znamená, že výběrový model měl na datech, která nikdy neviděl při ladění ani výběru, přesnější pravděpodobnosti než Model 1.
+## Ochrana proti přeučení
+Model 6 používá stejné bezpečné chronologické dělení jako 0.16:
+- starších **50 % train** vybírá nejlepší profil pro každý trh;
+- prostředních **25 % validation** rozhoduje, zda profil smí nahradit Model 1 a zda smí být použita kalibrace;
+- nejnovějších **25 % final test** je nedotčených a používá se až pro konečné hodnocení.
 
-Pokud validation nepotvrdí přínos Modelu 4, trh automaticky zůstane na Modelu 1. Stejně tak se nepoužije kalibrace, pokud na validation části nepomůže. To je záměrně konzervativní.
+Nový profil musí na validation zlepšit Brier score alespoň o 0,0005. Kalibrace má stejný minimální požadavek. Pokud podmínku nesplní, trh automaticky zůstane na Modelu 1.
 
 ## Doporučený test
-Zvol `Celá NHL`, období `2024/25 + 2025/26` a nejdříve `300` zápasů. Pokud vše proběhne, spusť `600`. U 600 zápasů je train/validation/final přibližně 300/150/150.
+Použij `Celá NHL` + `2024/25 + 2025/26` + nejdřív **300 zápasů**. Pokud vše funguje, spusť **600 zápasů**, aby měl finální test 150 zápasů.
 
-## Omezení
-Živá záložka Analýza zatím stále používá Model 1. Model 5 je validační laboratoř; do živého výpočtu se nepřenese, dokud neukáže stabilní přínos na finálním testu a napříč časovými obdobími. Backtest nepoužívá historické bookmakerové kurzy, takže nepočítá skutečné historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí modelu. Nejde o sázkové doporučení.
+## Důležité
+Živá záložka Analýza dál používá Model 1. Model 6 je zatím výzkumná vrstva v Backtestu. Historické bookmakerové kurzy nejsou součástí testu, takže z výsledků nelze přímo odvozovat historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou číselnou korekcí živého modelu.

@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.16 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.17 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -161,7 +161,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.16',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.17',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,7 +188,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.16', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.17', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -505,6 +505,99 @@ def _predict_game_context(home, away, game_date):
 
 def _predict_game_v2(home, away, game_date):
     return _predict_variant(home, away, game_date, recency=True, opponent=True, context=True)
+
+
+def _profile_inputs(home, away, game_date):
+    """Pregame-only profile features used by the 0.17 candidate models."""
+    rh = _history_before(home, game_date, 30)
+    ra = _history_before(away, game_date, 30)
+    if len(rh) < 10 or len(ra) < 10:
+        return None
+    base = _predict_game(home, away, game_date)
+    if not base:
+        return None
+
+    def stats(rows):
+        shots = max(1.0, _weighted(rows, 'shots'))
+        allowed = max(1.0, _weighted(rows, 'allowed'))
+        goals = max(0.0, _weighted(rows, 'goals'))
+        ga = max(0.0, _weighted(rows, 'ga'))
+        pace = shots + allowed
+        share = shots / max(1.0, shots + allowed)
+        # Shrink noisy conversion rates toward a conservative 10% prior.
+        shoot = _clip(.70 * (goals / shots) + .30 * .10, .055, .155)
+        concede = _clip(.70 * (ga / allowed) + .30 * .10, .055, .155)
+        goal_share = goals / max(.2, goals + ga)
+        return {'shots': shots, 'allowed': allowed, 'pace': pace, 'share': share,
+                'shoot': shoot, 'concede': concede, 'goal_share': goal_share}
+
+    return base, stats(rh), stats(ra)
+
+
+def _predict_game_pace(home, away, game_date):
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    total = base['home_shots'] + base['away_shots']
+    matchup_pace = (h['pace'] + a['pace']) / 2.0
+    factor = _clip(matchup_pace / max(1.0, total), .92, 1.08)
+    return dict(base, home_shots=_clip(base['home_shots'] * factor, 10.0, 50.0),
+                away_shots=_clip(base['away_shots'] * factor, 10.0, 50.0),
+                profile={'pace_factor': factor})
+
+
+def _predict_game_share(home, away, game_date):
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    total = base['home_shots'] + base['away_shots']
+    base_share = base['home_shots'] / max(1.0, total)
+    profile_share = _clip(.5 + .60 * (h['share'] - a['share']), .38, .62)
+    share = _clip(.65 * base_share + .35 * profile_share, .36, .64)
+    return dict(base, home_shots=_clip(total * share, 10.0, 50.0),
+                away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
+                profile={'home_shot_share': share})
+
+
+def _predict_game_efficiency(home, away, game_date):
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    home_rate = _clip((h['shoot'] + a['concede']) / 2.0, .06, .145)
+    away_rate = _clip((a['shoot'] + h['concede']) / 2.0, .06, .145)
+    gh_rate = base['home_shots'] * home_rate
+    ga_rate = base['away_shots'] * away_rate
+    # Keep a majority of Model 1's goal level; conversion is an added signal, not a replacement.
+    gh = _clip(.55 * base['home_goals'] + .45 * gh_rate, .2, 8.0)
+    ga = _clip(.55 * base['away_goals'] + .45 * ga_rate, .2, 8.0)
+    return dict(base, home_goals=gh, away_goals=ga,
+                profile={'home_shoot_rate': home_rate, 'away_shoot_rate': away_rate})
+
+
+def _predict_game_profile(home, away, game_date):
+    """Combined 0.17 profile: pace + shot share for shots, conversion for goals."""
+    data = _profile_inputs(home, away, game_date)
+    if not data:
+        return None
+    base, h, a = data
+    total0 = base['home_shots'] + base['away_shots']
+    pace_factor = _clip(((h['pace'] + a['pace']) / 2.0) / max(1.0, total0), .92, 1.08)
+    total = total0 * pace_factor
+    base_share = base['home_shots'] / max(1.0, total0)
+    profile_share = _clip(.5 + .60 * (h['share'] - a['share']), .38, .62)
+    share = _clip(.65 * base_share + .35 * profile_share, .36, .64)
+    hs = _clip(total * share, 10.0, 50.0)
+    aas = _clip(total * (1.0 - share), 10.0, 50.0)
+    home_rate = _clip((h['shoot'] + a['concede']) / 2.0, .06, .145)
+    away_rate = _clip((a['shoot'] + h['concede']) / 2.0, .06, .145)
+    gh = _clip(.50 * base['home_goals'] + .50 * hs * home_rate, .2, 8.0)
+    ga = _clip(.50 * base['away_goals'] + .50 * aas * away_rate, .2, 8.0)
+    return dict(base, home_shots=hs, away_shots=aas, home_goals=gh, away_goals=ga,
+                profile={'pace_factor': pace_factor, 'home_shot_share': share,
+                         'home_shoot_rate': home_rate, 'away_shoot_rate': away_rate})
 
 def _poisson(lam, max_n=135):
     p = math.exp(-lam)
@@ -1123,6 +1216,168 @@ def _fill_market_specific_model(row, weights_by_market, markets, line_buckets):
     }
 
 
+def _collect_source_market(rows, market, source):
+    out = []
+    for row in rows:
+        prediction = row['predictions'][source]
+        out.extend(_market_prediction_rows(prediction, row, market))
+    return out
+
+
+def _model6_profiles(tuning_rows, empty_markets, empty_lines):
+    """0.17: select genuinely different information by market.
+
+    Train chooses the best profile family, validation decides whether it is
+    allowed to replace Model 1 (and whether calibration is allowed), and the
+    newest 25% is never touched until final evaluation.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    labels = {'v1': 'Model 1', 'pace': 'Tempo střel', 'share': 'Shot-share profil',
+              'efficiency': 'Efektivita střel / inkasování', 'profile': 'Kombinovaný profil'}
+    candidates = {
+        'h2h': ('v1', 'share', 'pace', 'profile'),
+        'team': ('v1', 'share', 'pace', 'profile'),
+        'total': ('v1', 'pace', 'profile'),
+        'goals': ('v1', 'efficiency', 'profile'),
+        'winner': ('v1', 'efficiency', 'profile'),
+    }
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 100:
+        return {'available': False, 'reason': 'Model 6 Profiles potřebuje alespoň 100 vyhodnocených zápasů.'}
+    train_end = max(50, int(n * .50))
+    val_end = max(train_end + 25, int(n * .75))
+    val_end = min(val_end, n - 25)
+    train, validation, test = ordered[:train_end], ordered[train_end:val_end], ordered[val_end:]
+    min_model_gain = 0.0005
+    min_cal_gain = 0.0005
+    decisions, selected_source, calibration_fit = {}, {}, {}
+
+    for market in order:
+        train_scores = []
+        for source in candidates[market]:
+            rows = _collect_source_market(train, market, source)
+            train_scores.append((source, _market_brier(rows)))
+        valid_scores = [x for x in train_scores if x[1] is not None]
+        best_source, best_train_brier = min(valid_scores, key=lambda x: x[1]) if valid_scores else ('v1', None)
+        train_v1 = _collect_source_market(train, market, 'v1')
+        val_v1 = _collect_source_market(validation, market, 'v1')
+        train_v1_brier = _market_brier(train_v1)
+        val_v1_brier = _market_brier(val_v1)
+        val_candidate = _collect_source_market(validation, market, best_source)
+        val_candidate_brier = _market_brier(val_candidate)
+        train_gain = None if train_v1_brier is None or best_train_brier is None else train_v1_brier - best_train_brier
+        val_gain = None if val_v1_brier is None or val_candidate_brier is None else val_v1_brier - val_candidate_brier
+        use_candidate = bool(best_source != 'v1' and train_gain is not None and train_gain > 0 and
+                             val_gain is not None and val_gain >= min_model_gain)
+        source = best_source if use_candidate else 'v1'
+        selected_source[market] = source
+        sel_train = _collect_source_market(train, market, source)
+        sel_val = _collect_source_market(validation, market, source)
+        fit_train = _fit_affine(sel_train)
+        use_cal = False
+        cal_val_gain = None
+        if fit_train and len(sel_val) >= 8:
+            raw = _market_brier(sel_val)
+            cal = _market_brier(_apply_affine(sel_val, fit_train))
+            if raw is not None and cal is not None:
+                cal_val_gain = raw - cal
+                use_cal = cal_val_gain >= min_cal_gain
+        fit_final = _fit_affine(sel_train + sel_val) if use_cal else None
+        calibration_fit[market] = fit_final
+        decisions[market] = {
+            'label': {'h2h':'Více střel','team':'Střely týmu ±','total':'Celkové střely ±','goals':'Góly ±','winner':'Vítěz 1/X/2'}[market],
+            'train_candidates': [{'source': src, 'label': labels[src], 'brier': br} for src, br in train_scores],
+            'best_train_source': best_source, 'best_train_label': labels[best_source],
+            'selected_source': source, 'selected_label': labels[source],
+            'train_brier_v1': train_v1_brier, 'train_brier_candidate': best_train_brier,
+            'train_brier_gain': train_gain, 'validation_brier_v1': val_v1_brier,
+            'validation_brier_candidate': val_candidate_brier, 'validation_brier_gain': val_gain,
+            'calibration_enabled': bool(use_cal), 'calibration_validation_gain': cal_val_gain,
+        }
+
+    # Final untouched test.
+    labels_market = {
+        'h2h': ('Více střel', '3cestný trh; shoda = prohra týmového výběru'),
+        'team': ('Střely týmu ±', 'referenční hranice 27,5'),
+        'total': ('Celkové střely ±', 'referenční hranice 56,5'),
+        'goals': ('Góly ±', 'referenční hranice 5,5'),
+        'winner': ('Vítěz 1/X/2', 'výsledek po 60 minutách'),
+    }
+    final_compare = {}
+    final_raw, final_cal = {}, {}
+    for market in order:
+        v1_rows = _collect_source_market(test, market, 'v1')
+        raw_rows = _collect_source_market(test, market, selected_source[market])
+        cal_rows = _apply_affine(raw_rows, calibration_fit[market])
+        a = _metric_summary(v1_rows, *labels_market[market])
+        r = _metric_summary(raw_rows, *labels_market[market])
+        f = _metric_summary(cal_rows, *labels_market[market])
+        final_raw[market], final_cal[market] = r, f
+        final_compare[market] = {
+            'label': f['label'], 'n': min(a['n'], f['n']), 'selected_source': selected_source[market],
+            'selected_label': labels[selected_source[market]], 'calibration_enabled': bool(calibration_fit[market]),
+            'accuracy_v1': a['accuracy'], 'accuracy_select': f['accuracy'],
+            'accuracy_delta': None if a['accuracy'] is None or f['accuracy'] is None else f['accuracy'] - a['accuracy'],
+            'brier_v1': a['brier'], 'brier_raw_select': r['brier'], 'brier_select': f['brier'],
+            'brier_gain': None if a['brier'] is None or f['brier'] is None else a['brier'] - f['brier'],
+        }
+        decisions[market]['final_test_brier_gain'] = final_compare[market]['brier_gain']
+
+    # Line tables with the selected raw source for each related market.
+    v1_lines, sel_lines = empty_lines(), empty_lines()
+    dummy_v1, dummy_sel = empty_markets(), empty_markets()
+    final_games = []
+    for row in test:
+        p1 = row['predictions']['v1']
+        e1 = _evaluate_model_prediction(p1, row['hs'], row['aas'], row['hg'], row['ag'], row['regulation'], dummy_v1, v1_lines)
+
+        p_team = row['predictions'][selected_source['team']]
+        for line in TEAM_SHOT_LINES:
+            _record_line(sel_lines['team'][line], p_team['home_shots'], row['hs'], line)
+            _record_line(sel_lines['team'][line], p_team['away_shots'], row['aas'], line)
+        p_total = row['predictions'][selected_source['total']]
+        for line in TOTAL_SHOT_LINES:
+            _record_line(sel_lines['total'][line], p_total['home_shots'] + p_total['away_shots'], row['hs'] + row['aas'], line)
+        p_goals = row['predictions'][selected_source['goals']]
+        for line in GOAL_LINES:
+            _record_line(sel_lines['goals'][line], p_goals['home_goals'] + p_goals['away_goals'], row['hg'] + row['ag'], line, 55)
+
+        p_h2h = row['predictions'][selected_source['h2h']]
+        hrows = _market_prediction_rows(p_h2h, row, 'h2h')
+        sh, sa = _poisson(p_h2h['home_shots']), _poisson(p_h2h['away_shots'])
+        ph, _, pa = _h2h(sh, sa)
+        pick_home = ph >= pa
+        conf = ph if pick_home else pa
+        fit = calibration_fit['h2h']
+        if fit:
+            conf = _clip(fit['intercept'] + fit['slope'] * conf, .01, .99)
+        final_games.append({
+            'date': row['date'], 'matchup': row['matchup'],
+            'actual_shots': f"{int(row['hs'])}:{int(row['aas'])}",
+            'expected_shots_v1': f"{p1['home_shots']:.1f}:{p1['away_shots']:.1f}",
+            'expected_shots_select': f"{p_h2h['home_shots']:.1f}:{p_h2h['away_shots']:.1f}",
+            'h2h_pick_select': row['home'] if pick_home else row['away'],
+            'h2h_probability_select': conf,
+            'h2h_correct_select': bool(hrows and hrows[0]['y']),
+            'h2h_probability_v1': e1['h2h_conf'], 'h2h_correct_v1': bool(e1['h2h_ok']),
+        })
+
+    dates = lambda rows: [x['date'] for x in rows]
+    return {
+        'available': True, 'train_n': len(train), 'validation_n': len(validation), 'test_n': len(test),
+        'train_from': min(dates(train)), 'train_to': max(dates(train)),
+        'validation_from': min(dates(validation)), 'validation_to': max(dates(validation)),
+        'test_from': min(dates(test)), 'test_to': max(dates(test)),
+        'min_model_gain': min_model_gain, 'min_calibration_gain': min_cal_gain,
+        'decisions': decisions, 'final_compare': final_compare,
+        'final_models': {'select_raw': {'markets': final_raw, 'lines': _line_summaries(sel_lines)},
+                         'select': {'markets': final_cal, 'lines': _line_summaries(sel_lines)},
+                         'v1': {'lines': _line_summaries(v1_lines)}},
+        'final_games': list(reversed(final_games)),
+    }
+
+
 def _model4_train_test(tuning_rows, empty_markets, empty_lines):
     """Market-specific Model 4.
 
@@ -1463,6 +1718,10 @@ def run_backtest(team, season_start, game_limit=10):
         'opponent': ('Jen síla soupeře', 'Pouze silnější attack-vs-defense normalizace; původní váhy formy', _predict_game_opponent),
         'context': ('Jen B2B / odpočinek / cestování', 'Model 1 + data-derived kontext bez změny formy a soupeře', _predict_game_context),
         'full': ('Full kandidát', 'Rychlejší forma + síla soupeře + B2B/odpočinek/cestování', _predict_game_v2),
+        'pace': ('Tempo střel', 'Předzápasové tempo: střely vytvořené + povolené obou týmů', _predict_game_pace),
+        'share': ('Shot-share profil', 'Rozdělení očekávaných střel podle dlouhodobého podílu střel pro/proti', _predict_game_share),
+        'efficiency': ('Efektivita střel / inkasování', 'Gólový profil ze střel, shooting% a inkasované efektivity se shrinkage', _predict_game_efficiency),
+        'profile': ('Kombinovaný profil', 'Tempo + shot share pro střely a efektivita střel pro góly', _predict_game_profile),
     }
     stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
     game_rows, factor_rows, tuning_rows = [], [], []
@@ -1581,6 +1840,7 @@ def run_backtest(team, season_start, game_limit=10):
 
     model4 = _model4_train_test(tuning_rows, empty_markets, empty_lines)
     model5 = _model5_select(tuning_rows, empty_markets, empty_lines)
+    model6 = _model6_profiles(tuning_rows, empty_markets, empty_lines)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -1592,9 +1852,9 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'games': game_rows,
-        'warning': ('0.16 přidává Model 5 Select: starších 50 % ladí váhy, prostředních 25 % rozhoduje, zda nový faktor a kalibrace vůbec smějí projít, a nejnovějších 25 % zůstává nedotčený finální test. '
-                    'Multi-season režim bere vyvážený vzorek z 2024/25 a 2025/26, takže starší sezóna nemůže být vytlačena novější. Živá Analýza '
+        'model4': model4, 'model5': model5, 'model6': model6, 'games': game_rows,
+        'warning': ('0.17 přidává Model 6 Profiles: místo dalšího ladění stejných vah testuje nové předzápasové informace — tempo střel, shot share a efektivitu střel/inkasování — zvlášť pro každý trh. '
+                    'Train vybírá kandidáta, validation rozhoduje zda smí nahradit Model 1 a nejnovějších 25 % je nedotčený finální test. Multi-season režim zůstává vyvážený mezi sezonami. Živá Analýza '
                     'stále používá Model 1, dokud výběrový model neprokáže stabilní zlepšení na finálním testu a napříč sezonami. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
@@ -1617,7 +1877,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.16', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.17', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
