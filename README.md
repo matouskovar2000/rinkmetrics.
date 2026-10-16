@@ -1,32 +1,50 @@
-# NHL Team Shots Analyzer 0.21
+# NHL Team Shots Analyzer 0.22
 
-Verze 0.21 přidává **Model 10 Locked**. Po výsledcích verze 0.20 už u trhů, kde jsme našli stabilní signál, nenecháváme model v každém časovém bloku přepínat mezi více kandidáty. Kandidát se zamkne před testem a pak se opakovaně ověřuje v navazujících walk-forward obdobích.
+Verze 0.22 rozšiřuje validaci modelu z krátkých vzorků na větší, vícesezonní test.
 
-## Zamknuté kandidáty
-- **Více střel:** pevný profil založený na 5v5 a score-tied shot-attempt share z NHL play-by-play. Tento směr byl v 0.20 stabilní ve 4 z 5 forward období.
-- **Góly ±:** pevný blend historické efektivity střel/inkasování a PBP slot + power-play profilu. Tyto gólové signály byly opakovaně stabilní v předchozích walk-forward testech.
+## Hlavní změny
 
-## Nové experimenty pro zbývající trhy
-- **Střely týmu ±:** neutral-state 5v5/tied attempts, soupeřovo potlačení pokusů, SOG-per-attempt a malý PP tlak.
-- **Celkové střely ±:** neutral-state attempt pace, tied pace, převod pokusů na střely na branku a předzápasová variabilita.
-- **Vítěz 1/X/2:** possession profil kombinovaný se stabilnějším gólovým profilem.
+- **Až 4 kompletní sezóny:** 2022/23 + 2023/24 + 2024/25 + 2025/26.
+- **Až 2000 league-wide zápasů** v jednom backtestu.
+- V každé sezoně se zápasy vybírají **rovnoměrně napříč celým ročníkem**, ne jen z jeho konce.
+- Pro 1200+ zápasů používá Model 10 větší **8-fold forward validaci** a menší warm-up, aby testovací část pokryla více sezon.
+- Nový **Model 11 Confidence** měří, co se stane, když vezmeme jen predikce s modelovou jistotou:
+  - ≥ 60 %
+  - ≥ 65 %
+  - ≥ 70 %
+  - ≥ 75 %
+  - ≥ 80 %
+- U každého pásma se ukazuje:
+  - počet případů N,
+  - pokrytí,
+  - průměrná modelová jistota,
+  - skutečná úspěšnost,
+  - Brier score,
+  - nejhorší sezónní úspěšnost, pokud má sezóna v pásmu alespoň 20 případů,
+  - velikost vzorku (OK / malý / velmi malý).
+- Vedle kandidáta je pro stejný práh zobrazen také **Model 1**.
 
-Každý z těchto tří trhů má v Modelu 10 jen jeden nový experiment. Tím omezujeme riziko přeučení z výběru mezi příliš mnoha kandidáty.
+## Ochrana proti falešně vysoké úspěšnosti
 
-## Shadow model v živé Analýze
-Živá stránka stále používá **Model 1** pro hlavní pravděpodobnosti, férové kurzy a EV. Nově ale zobrazí kartu **Experimentální model 0.21 · shadow**, kde vedle Modelu 1 ukáže:
-- zamknutou pravděpodobnost trhu „více střel“ včetně remízy,
-- očekávané střely Modelu 1 vs. locked kandidáta,
-- očekávané góly Modelu 1 vs. locked gólového kandidáta,
-- orientační pravděpodobnost over 5,5 gólů obou modelů.
+Pásma 60/65/70/75/80 % jsou pevně daná před testem. Aplikace nevybírá zpětně nejlepší hranici podle výsledků. Confidence tabulka se počítá pouze na chronologické forward části.
 
-Shadow výsledek nic automaticky nepřepisuje a nepoužívá se k výpočtu EV.
+Vysoká úspěšnost na několika málo případech není označena za úspěch. Vždy je nutné sledovat zároveň N, pokrytí, Brier a stabilitu napříč sezonami.
 
-## Validace
-Model 10 používá stejný walk-forward princip: u 600 zápasů starší polovina tvoří počáteční historii a novější polovina se rozdělí do 5 po sobě jdoucích forward foldů. Kandidát je označen **STABILNÍ**, pokud má kladný průměrný Brier zisk, zlepší alespoň 60 % forward období a nemá extrémně špatný nejhorší fold.
+## Velké backtesty
+
+Backtest nyní běží jako serverová úloha a prohlížeč její stav průběžně kontroluje. To je důležité pro 1500–2000 zápasů, protože první běh musí načíst velké množství historických NHL boxscore a play-by-play dat. Další běhy ve stejném serverovém procesu mohou využít cache.
 
 ## Doporučený test
-`Celá NHL` → `2024/25 + 2025/26` → `600 zápasů`.
 
-## Omezení
-Backtest nepoužívá historické bookmakerové kurzy, takže neprokazuje historické EV ani ROI. Slot je pouze geometrický proxy z veřejných souřadnic NHL play-by-play, nikoli oficiální xG. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí modelu. Výsledky jsou analytická validace, ne sázkové doporučení.
+**Celá NHL → 2022/23 + 2023/24 + 2024/25 + 2025/26 → 2000 zápasů**
+
+Nejdůležitější části výsledku:
+1. Model 11 Confidence
+2. Model 10 Locked
+3. Model 9 Event Data jako kontrola PBP profilů
+
+## Důležité omezení
+
+Živá Analýza stále používá Model 1. Locked modely jsou zatím pouze shadow porovnání.
+
+Backtest neobsahuje historické bookmakerové kurzy, takže sám o sobě neprokazuje historické ROI ani EV. Geometrický slot proxy není oficiální xG model.

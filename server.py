@@ -1,9 +1,10 @@
-"""NHL Team Shots Analyzer 0.21 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.22 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
 import time
 import math
+import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ ARENA_COORDS = {
     'PHI':(39.90,-75.17),'PIT':(40.44,-79.99),'SEA':(47.62,-122.35),'SJS':(37.33,-121.90),
     'STL':(38.63,-90.21),'TBL':(27.94,-82.45),'TOR':(43.64,-79.38),'UTA':(40.77,-111.90),
     'VAN':(49.28,-123.11),'VGK':(36.10,-115.18),'WSH':(38.90,-77.02),'WPG':(49.89,-97.14),
+    'ARI':(33.43,-111.93),
 }
 
 def _distance_km(a, b):
@@ -55,6 +57,10 @@ _history_cache = {}
 _history_cache_lock = threading.Lock()
 _event_cache = {}
 _event_cache_lock = threading.Lock()
+
+_backtest_jobs = {}
+_backtest_jobs_lock = threading.Lock()
+_BACKTEST_JOB_TTL = 4 * 3600
 
 
 class TextExtractor(HTMLParser):
@@ -163,7 +169,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.21',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.22',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -190,7 +196,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.21', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.22', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -1384,10 +1390,22 @@ def _prefetch(paths, workers=16):
 
 
 def _league_schedule(season_start):
-    """Load each club schedule in parallel and deduplicate games by NHL game id."""
-    teams = list(TEAM_NICK)
+    """Load club schedules in parallel and deduplicate by NHL game id.
+
+    ARI is included for pre-Utah seasons. Individual club schedule failures are
+    tolerated because franchise codes can be season-specific (for example UTA
+    has no 2022/23 schedule while ARI does).
+    """
+    teams = list(TEAM_NICK) + ['ARI']
+    def safe_schedule(team):
+        try:
+            return _team_schedule(team, season_start)
+        except (HTTPError, URLError, TimeoutError):
+            return []
+        except Exception:
+            return []
     with ThreadPoolExecutor(max_workers=12) as pool:
-        schedules = list(pool.map(lambda t: _team_schedule(t, season_start), teams))
+        schedules = list(pool.map(safe_schedule, teams))
     unique = {}
     for schedule in schedules:
         for game in schedule:
@@ -1397,13 +1415,31 @@ def _league_schedule(season_start):
     return list(unique.values())
 
 
-def _prepare_backtest_targets(team, season_start, game_limit):
-    """Prepare a balanced historical sample.
+def _even_sample_games(schedule, limit):
+    """Pick games across the whole season instead of taking only the latest block."""
+    ordered = sorted(
+        schedule,
+        key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '',
+    )
+    if limit <= 0:
+        return []
+    if len(ordered) <= limit:
+        return ordered
+    if limit == 1:
+        return [ordered[-1]]
+    step = (len(ordered) - 1) / float(limit - 1)
+    idx = [round(i * step) for i in range(limit)]
+    return [ordered[i] for i in idx]
 
-    ``season_start`` may be one start year or a sequence of start years. In the
-    multi-season mode we take an approximately equal number of games from each
-    season before combining them. This prevents the newer season from crowding
-    the older one out of the requested sample.
+
+def _prepare_backtest_targets(team, season_start, game_limit):
+    """Prepare a balanced, season-wide historical sample.
+
+    ``season_start`` may be one start year or a sequence of start years. In
+    multi-season mode the requested sample is split approximately equally by
+    season. Within each season games are sampled evenly across the full regular
+    season instead of taking only the newest games. This reduces late-season
+    sampling bias and makes 1500–2000 game validation much more representative.
     """
     seasons = list(season_start) if isinstance(season_start, (list, tuple)) else [season_start]
     base = game_limit // len(seasons)
@@ -1415,14 +1451,19 @@ def _prepare_backtest_targets(team, season_start, game_limit):
             schedule = _league_schedule(start)
         else:
             schedule = [g for g in _team_schedule(team, start) if _completed_regular(g)]
-        schedule.sort(key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)
-        selected.extend(schedule[:limit])
+        selected.extend(_even_sample_games(schedule, limit))
     unique = {}
     for game in selected:
         gid = _game_id(game)
         if gid:
             unique[gid] = game
-    return sorted(unique.values(), key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '', reverse=True)[:game_limit]
+    # Keep newest-first order because older calibration helpers rely on that
+    # ordering before explicitly reversing to chronological order.
+    return sorted(
+        unique.values(),
+        key=lambda g: g.get('startTimeUTC') or g.get('gameDate') or '',
+        reverse=True,
+    )[:game_limit]
 
 
 def _prefetch_backtest_histories(targets):
@@ -2186,6 +2227,145 @@ def _model8_specialists_walk_forward(tuning_rows):
 
 
 
+def _locked_validation_plan(n):
+    """Chronological plan for fixed 0.22 validation.
+
+    Large samples use a smaller warm-up fraction so the forward evaluation
+    spans several seasons. The candidate formulas are already fixed; warm-up
+    exists only to preserve a clean chronological evaluation window.
+    """
+    if n >= 1200:
+        return 8, max(250, n // 5)
+    if n >= 800:
+        return 6, max(220, n // 3)
+    if n >= 500:
+        return 5, n // 2
+    if n >= 300:
+        return 4, n // 2
+    return 3, max(90, n // 2)
+
+
+def _dated_source_market(rows, market, source):
+    out = []
+    for row in rows:
+        for pred in _market_prediction_rows(row['predictions'][source], row, market):
+            item = dict(pred)
+            item['date'] = row.get('date')
+            out.append(item)
+    return out
+
+
+def _confidence_threshold_summary(predictions, threshold, min_season_n=20):
+    total = len(predictions)
+    chosen = [x for x in predictions if x.get('p') is not None and x['p'] >= threshold]
+    n = len(chosen)
+    if not n:
+        return {
+            'threshold': threshold, 'n': 0, 'coverage': 0.0, 'avg_probability': None,
+            'accuracy': None, 'brier': None, 'calibration_gap': None,
+            'sample_status': 'BEZ DAT', 'seasons_with_sample': 0,
+            'season_min_accuracy': None, 'season_max_accuracy': None,
+        }
+    avg_p = sum(x['p'] for x in chosen) / n
+    accuracy = sum(x['y'] for x in chosen) / n
+    brier = sum((x['p'] - x['y']) ** 2 for x in chosen) / n
+
+    by_season = {}
+    for x in chosen:
+        date = x.get('date')
+        if not date:
+            continue
+        try:
+            season = _season_start(date)
+        except Exception:
+            continue
+        by_season.setdefault(season, []).append(x)
+    season_rows = []
+    for season, rows in sorted(by_season.items()):
+        if len(rows) < min_season_n:
+            continue
+        season_rows.append({
+            'season': season,
+            'label': f'{season}/{str(season + 1)[2:]}',
+            'n': len(rows),
+            'accuracy': sum(x['y'] for x in rows) / len(rows),
+            'avg_probability': sum(x['p'] for x in rows) / len(rows),
+        })
+    season_acc = [x['accuracy'] for x in season_rows]
+    status = 'OK VZOREK' if n >= 100 else 'MALÝ VZOREK' if n >= 40 else 'VELMI MALÝ'
+    return {
+        'threshold': threshold, 'n': n, 'coverage': n / total if total else 0.0,
+        'avg_probability': avg_p, 'accuracy': accuracy, 'brier': brier,
+        'calibration_gap': accuracy - avg_p, 'sample_status': status,
+        'seasons_with_sample': len(season_rows),
+        'season_min_accuracy': min(season_acc) if season_acc else None,
+        'season_max_accuracy': max(season_acc) if season_acc else None,
+        'season_details': season_rows,
+    }
+
+
+def _model11_confidence(tuning_rows):
+    """0.22 confidence-band study on a chronological forward-only window.
+
+    Thresholds are declared in advance (60/65/70/75/80 %). We report every
+    threshold, including tiny samples, so a high hit rate cannot be hidden
+    behind selective reporting. Candidate and Model 1 use their own probability
+    thresholds and are shown side by side.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    sources = {
+        'h2h': 'locked_h2h', 'team': 'team_neutral', 'total': 'total_neutral',
+        'goals': 'locked_goals', 'winner': 'winner_plus',
+    }
+    labels = {
+        'h2h': 'Více střel', 'team': 'Střely týmu ±', 'total': 'Celkové střely ±',
+        'goals': 'Góly ±', 'winner': 'Vítěz 1/X/2',
+    }
+    candidate_labels = {
+        'h2h': 'LOCK 5v5+tied', 'team': 'Neutral+PP',
+        'total': 'Neutral pace', 'goals': 'LOCK efficiency+slot/PP',
+        'winner': 'Possession+goals',
+    }
+    thresholds = (.60, .65, .70, .75, .80)
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 180:
+        return {'available': False, 'reason': 'Model 11 Confidence potřebuje alespoň 180 vyhodnocených zápasů.'}
+    fold_count, warmup_n = _locked_validation_plan(n)
+    test = ordered[warmup_n:]
+    if not test:
+        return {'available': False, 'reason': 'Chybí forward část pro confidence test.'}
+
+    markets = {}
+    for market in order:
+        candidate = _dated_source_market(test, market, sources[market])
+        v1 = _dated_source_market(test, market, 'v1')
+        markets[market] = {
+            'label': labels[market],
+            'candidate_label': candidate_labels[market],
+            'source': sources[market],
+            'candidate_n': len(candidate),
+            'v1_n': len(v1),
+            'candidate': [_confidence_threshold_summary(candidate, t) for t in thresholds],
+            'v1': [_confidence_threshold_summary(v1, t) for t in thresholds],
+        }
+    seasons = sorted({_season_start(r['date']) for r in test if r.get('date')})
+    return {
+        'available': True,
+        'warmup_n': warmup_n,
+        'forward_games': len(test),
+        'fold_count_reference': fold_count,
+        'test_from': test[0]['date'],
+        'test_to': test[-1]['date'],
+        'thresholds': list(thresholds),
+        'seasons': seasons,
+        'season_labels': [f'{x}/{str(x+1)[2:]}' for x in seasons],
+        'markets': markets,
+        'note': ('Pásma 60–80 % jsou předem daná a počítají se pouze na chronologické forward části. '
+                 'Vysoká úspěšnost s malým N se nepovažuje za důkaz; proto se vždy ukazuje počet případů, pokrytí, Brier a nejhorší sezónní úspěšnost při dostatečném sezónním vzorku.'),
+    }
+
+
 def _model10_locked_walk_forward(tuning_rows):
     """0.21 fixed-source walk-forward test.
 
@@ -2208,8 +2388,7 @@ def _model10_locked_walk_forward(tuning_rows):
     n = len(ordered)
     if n < 180:
         return {'available': False, 'reason': 'Model 10 Locked potřebuje alespoň 180 vyhodnocených zápasů.'}
-    fold_count = 5 if n >= 500 else 4 if n >= 300 else 3
-    warmup_n = max(90, n // 2)
+    fold_count, warmup_n = _locked_validation_plan(n)
     remaining = n - warmup_n
     fold_size = max(20, remaining // fold_count)
     min_stable_gain = 0.0005
@@ -3086,6 +3265,16 @@ def run_backtest(team, season_start, game_limit=10):
     model8 = _model8_specialists_walk_forward(tuning_rows)
     model9 = _model9_event_walk_forward(tuning_rows)
     model10 = _model10_locked_walk_forward(tuning_rows)
+    model11 = _model11_confidence(tuning_rows)
+
+    evaluated_by_season = {}
+    for row in tuning_rows:
+        try:
+            sy = _season_start(row['date'])
+        except Exception:
+            continue
+        key = f'{sy}/{str(sy + 1)[2:]}'
+        evaluated_by_season[key] = evaluated_by_season.get(key, 0) + 1
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -3097,11 +3286,39 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'games': game_rows,
-        'warning': ('0.21 přidává Model 10 Locked: stabilní 5v5+tied profil pro více střel a stabilní efficiency+slot/PP profil pro góly jsou před testem pevně zamknuté. '
-                    'Týmové střely, celkové střely a 1/X/2 dostávají vždy jen jeden nový experiment, aby se omezilo přelaďování. Živá Analýza dál používá Model 1; zamknuté kandidáty ukazuje pouze jako shadow porovnání. '
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
+        'warning': ('0.22 rozšiřuje test až na čtyři kompletní sezóny a 2000 reprezentativně rozložených zápasů. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
+                    'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. Živá Analýza dál používá Model 1 a locked kandidáty pouze jako shadow porovnání. '
                     'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
+
+
+def _cleanup_backtest_jobs():
+    now = time.time()
+    with _backtest_jobs_lock:
+        stale = [jid for jid, job in _backtest_jobs.items()
+                 if now - job.get('created_at', now) > _BACKTEST_JOB_TTL]
+        for jid in stale:
+            _backtest_jobs.pop(jid, None)
+
+
+def _run_backtest_job(job_id, team, start, games):
+    try:
+        result = run_backtest(team, start, games)
+        payload = {'status': 'done', 'result': result, 'finished_at': time.time()}
+    except HTTPError as exc:
+        payload = {'status': 'error', 'error': f'NHL API při backtestu odpovědělo HTTP {exc.code}', 'finished_at': time.time()}
+    except (URLError, TimeoutError):
+        payload = {'status': 'error', 'error': 'NHL API není při backtestu dostupné', 'finished_at': time.time()}
+    except Exception as exc:
+        payload = {'status': 'error', 'error': 'Backtest se nepodařilo dokončit',
+                   'detail': str(exc)[:180], 'finished_at': time.time()}
+    with _backtest_jobs_lock:
+        job = _backtest_jobs.get(job_id)
+        if job:
+            job.update(payload)
+
+
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -3114,6 +3331,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.handle_lineups(parse_qs(parsed.query))
         if parsed.path == '/backtest':
             return self.handle_backtest(parse_qs(parsed.query))
+        if parsed.path == '/backtest-start':
+            return self.handle_backtest_start(parse_qs(parsed.query))
+        if parsed.path == '/backtest-status':
+            return self.handle_backtest_status(parse_qs(parsed.query))
         if parsed.path == '/shadow':
             return self.handle_shadow(parse_qs(parsed.query))
         if not parsed.path.startswith('/api/'):
@@ -3124,7 +3345,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.21', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.22', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -3138,25 +3359,39 @@ class Handler(SimpleHTTPRequestHandler):
         except (URLError, TimeoutError):
             self.respond(502, {'error': 'NHL API není dostupné'})
 
-    def handle_backtest(self, query):
+    def _parse_backtest_query(self, query):
         team = (query.get('team', ['FLA'])[0] or 'FLA').upper()
-        raw_season = query.get('season', ['20252026'])[0]
+        raw_season = query.get('season', ['MULTI4'])[0]
         try:
-            games = int(query.get('games', ['10'])[0])
+            games = int(query.get('games', ['600'])[0])
         except ValueError:
-            games = 10
+            games = 600
         if team != 'ALL' and team not in TEAM_NICK:
-            return self.respond(400, {'error': 'Neplatný tým pro backtest'})
-        if raw_season == 'MULTI':
-            start = (2024, 2025)
-            games = max(100, min(600 if team == 'ALL' else 120, games))
+            return None, 'Neplatný tým pro backtest'
+
+        multi = {
+            'MULTI4': (2022, 2023, 2024, 2025),
+            'MULTI3': (2023, 2024, 2025),
+            'MULTI2': (2024, 2025),
+            'MULTI': (2024, 2025),
+        }
+        if raw_season in multi:
+            start = multi[raw_season]
+            games = max(100, min(2000 if team == 'ALL' else 300, games))
         else:
             if not re.fullmatch(r'20\d{6}', raw_season):
-                return self.respond(400, {'error': 'Neplatná sezóna'})
+                return None, 'Neplatná sezóna'
             start = int(raw_season[:4])
             if raw_season != _season_id(start):
-                return self.respond(400, {'error': 'Sezóna musí mít tvar 20252026'})
-            games = max(5, min(300 if team == 'ALL' else 60, games))
+                return None, 'Sezóna musí mít tvar 20252026'
+            games = max(5, min(1200 if team == 'ALL' else 80, games))
+        return (team, start, games), None
+
+    def handle_backtest(self, query):
+        params, error = self._parse_backtest_query(query)
+        if error:
+            return self.respond(400, {'error': error})
+        team, start, games = params
         try:
             result = run_backtest(team, start, games)
             return self.respond(200, result, cache='no-store')
@@ -3166,6 +3401,52 @@ class Handler(SimpleHTTPRequestHandler):
             return self.respond(502, {'error': 'NHL API není při backtestu dostupné'})
         except Exception as exc:
             return self.respond(500, {'error': 'Backtest se nepodařilo dokončit', 'detail': str(exc)[:180]})
+
+    def handle_backtest_start(self, query):
+        params, error = self._parse_backtest_query(query)
+        if error:
+            return self.respond(400, {'error': error})
+        team, start, games = params
+        _cleanup_backtest_jobs()
+        key = (team, tuple(start) if isinstance(start, (tuple, list)) else start, games)
+        with _backtest_jobs_lock:
+            for jid, job in _backtest_jobs.items():
+                if job.get('status') == 'running':
+                    if job.get('key') == key:
+                        return self.respond(202, {'job_id': jid, 'status': 'running', 'reused': True})
+                    return self.respond(409, {'error': 'Jiný velký backtest právě běží. Počkej na jeho dokončení.'})
+            job_id = secrets.token_hex(8)
+            _backtest_jobs[job_id] = {
+                'status': 'running', 'created_at': time.time(), 'key': key,
+                'team': team, 'games': games,
+            }
+        worker = threading.Thread(target=_run_backtest_job, args=(job_id, team, start, games), daemon=True)
+        worker.start()
+        return self.respond(202, {'job_id': job_id, 'status': 'running'})
+
+    def handle_backtest_status(self, query):
+        job_id = (query.get('id', [''])[0] or '').strip()
+        if not job_id:
+            return self.respond(400, {'error': 'Chybí ID backtestu'})
+        _cleanup_backtest_jobs()
+        with _backtest_jobs_lock:
+            job = _backtest_jobs.get(job_id)
+            if not job:
+                return self.respond(404, {'error': 'Backtest už není dostupný nebo neexistuje'})
+            status = job.get('status')
+            created = job.get('created_at', time.time())
+            if status == 'running':
+                payload = {
+                    'status': 'running',
+                    'elapsed_seconds': round(time.time() - created, 1),
+                    'games': job.get('games'),
+                }
+            elif status == 'done':
+                payload = {'status': 'done', 'result': job.get('result')}
+            else:
+                payload = {'status': 'error', 'error': job.get('error', 'Backtest selhal'),
+                           'detail': job.get('detail')}
+        return self.respond(200, payload, cache='no-store')
 
     def handle_shadow(self, query):
         home = (query.get('home', [''])[0] or '').upper()
