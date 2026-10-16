@@ -1,24 +1,23 @@
-# NHL Team Shots Analyzer 0.14
+# NHL Team Shots Analyzer 0.15
 
-Verze 0.14 přidává **Model 3 Lab**. Cílem není přidat další ručně zvolené koeficienty, ale naučit malé konzervativní váhy na starší části historie a ověřit je na novějších zápasech, které ladění vah nevidělo.
+Verze 0.15 přidává **Model 4 – samostatné faktory pro každý trh**. Už nenutíme více střel, týmové střely, celkové střely, góly a 1/X/2 používat stejné váhy.
 
 ## Co je nové
-- League-wide backtest lze spustit až na **300 posledních zápasech**.
-- Data se chronologicky rozdělí na **60 % train / 40 % holdout**.
-- Model 3 začíná u Modelu 1 a učí tři malé váhy: rychlejší forma, síla soupeře a B2B/odpočinek/cestování.
-- Grid search testuje 80 konzervativních kombinací vah pouze na train části a používá malou regularizační penalizaci proti zbytečně velkým korekcím.
-- Hlavní tabulka Model 1 vs. Model 3 je počítána **jen na novějším holdoutu**.
-- Pro týmové střely, celkové střely a góly se na holdoutu zobrazují i jednotlivé hranice, baseline, Brier score a Brier Skill.
-- Pravděpodobnostní kalibrátor se učí pouze na train části a jeho Brier zisk se měří na holdoutu.
-- Historie předzápasových dat se nově cachuje, aby větší league-wide běhy neopakovaly stejnou práci pro každou variantu modelu.
+- data se dál chronologicky dělí na **60 % train / 40 % holdout**;
+- každý z pěti trhů si na train části samostatně vybírá váhu **rychlé formy**, **síly soupeře** a **B2B/odpočinku/cestování**;
+- grid search je konzervativní: součet faktorových vah nesmí překročit 1,0 a větší odchylky od Modelu 1 dostávají malou regularizační penalizaci;
+- tabulka Model 4 ukazuje pro každý trh jiné zvolené váhy, train Brier zisk a hlavně **holdout Brier zisk**;
+- týmové střely, celkové střely a góly mají na holdoutu vlastní tabulky hranic s baseline a Brier Skill;
+- kalibrace pravděpodobností se učí samostatně pro každý trh pouze na train části a testuje až na holdoutu;
+- starší ablační a Full-model diagnostika zůstává v aplikaci jako kontrola, ale hlavním rozhodovacím testem je Model 4.
 
 ## Jak výsledek číst
-Nejdůležitější je sekce **Model 3 · naučené váhy a nezávislý holdout**. Kladný Brier zisk znamená, že Model 3 má na neviděných novějších zápasech přesnější pravděpodobnosti než Model 1. Vyšší úspěšnost bez lepšího Brier score sama o sobě nestačí.
+Nejdůležitější je **holdout Brier zisk**. Kladná hodnota znamená, že tržně specifický Model 4 na novějších, při ladění neviděných zápasech překonal Model 1. Nulová váha u faktoru znamená, že se na train datech nevyplatilo ho pro daný trh přidat.
 
-Váhy z jednoho běhu se zatím nepřenášejí do živé Analýzy. Model 1 zůstává hlavním modelem, dokud Model 3 neukáže stabilní zlepšení na větším league-wide vzorku a ideálně více časových obdobích.
+Vyšší úspěšnost bez lepšího Brier score nestačí. Stejně tak vysoká úspěšnost na extrémní hranici může být jen důsledkem jednoduché baseline (například téměř vždy under).
 
-## Doporučený test
-Začni `Celá NHL` + `100` zápasů. Pokud vše funguje, spusť `200` a následně `300`. První velký běh může podle cache a NHL API trvat několik minut.
+## Živá Analýza
+Živá záložka **Analýza stále používá Model 1**. Model 4 je zatím pouze validační laboratoř. Do živých pravděpodobností ho má smysl zapojit až tehdy, když se jeho přínos opakuje na větších league-wide vzorcích a více obdobích.
 
 ## Omezení
-Backtest stále nepoužívá historické bookmakerové kurzy, takže z něj nelze přímo odvozovat historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí živého modelu. Model není považován za finálně validovaný a nejde o sázkové doporučení.
+Backtest nepoužívá historické bookmakerové kurzy, takže z něj nelze přímo odvozovat historické EV ani ROI. Sestavy, zranění a potvrzený brankář zatím nejsou automatickou číselnou korekcí živého modelu. Model není finálně validovaný a nejde o sázkové doporučení.

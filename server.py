@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.14 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.15 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -161,7 +161,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.13',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.15',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,7 +188,7 @@ def _nhl_json(path, ttl=21600):
             return cached[1]
     req = Request(
         'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.14', 'Accept': 'application/json'},
+        headers={'User-Agent': 'NHLShotsAnalyzer/0.15', 'Accept': 'application/json'},
     )
     with urlopen(req, timeout=18) as response:
         data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -1007,6 +1007,211 @@ def _model3_train_test(tuning_rows, empty_markets, empty_lines):
     }
 
 
+
+def _market_prediction_rows(prediction, row, market):
+    """Return only the reference prediction(s) needed by one market.
+
+    0.15 tunes each betting market independently, so we intentionally avoid
+    forcing one set of factor weights onto unrelated markets.
+    """
+    hs, aas = row['hs'], row['aas']
+    hg, ag = row['hg'], row['ag']
+    regulation = row.get('regulation')
+
+    if market == 'h2h':
+        sh = _poisson(prediction['home_shots'])
+        sa = _poisson(prediction['away_shots'])
+        ph, _, pa = _h2h(sh, sa)
+        pick_home = ph >= pa
+        return [{'p': ph if pick_home else pa,
+                 'y': 1 if (hs > aas if pick_home else aas > hs) else 0}]
+    if market == 'team':
+        return [
+            _line_pick_row(prediction['home_shots'], hs, 27.5),
+            _line_pick_row(prediction['away_shots'], aas, 27.5),
+        ]
+    if market == 'total':
+        return [_line_pick_row(prediction['home_shots'] + prediction['away_shots'], hs + aas, 56.5)]
+    if market == 'goals':
+        return [_line_pick_row(prediction['home_goals'] + prediction['away_goals'], hg + ag, 5.5, 55)]
+    if market == 'winner' and regulation:
+        gh = _poisson(prediction['home_goals'], 45)
+        ga = _poisson(prediction['away_goals'], 45)
+        wh, wt, wa = _h2h(gh, ga)
+        probs = {'home': wh, 'draw': wt, 'away': wa}
+        pick = max(probs, key=probs.get)
+        return [{'p': probs[pick], 'y': 1 if pick == regulation else 0}]
+    return []
+
+
+def _collect_one_market(rows, market, weights=None, use_v1=False):
+    out = []
+    for row in rows:
+        prediction = row['predictions']['v1'] if use_v1 else _blend_candidate_prediction(row['predictions'], weights)
+        out.extend(_market_prediction_rows(prediction, row, market))
+    return out
+
+
+def _market_weight_objective(rows, market, weights):
+    predictions = _collect_one_market(rows, market, weights=weights)
+    brier = _market_brier(predictions)
+    if brier is None:
+        return 999.0, None
+    # Conservative shrinkage: larger deviations from Model 1 need to earn their place.
+    penalty = 0.0007 * sum(float(weights[k]) ** 2 for k in ('recency', 'opponent', 'context'))
+    return brier + penalty, brier
+
+
+def _fill_market_specific_model(row, weights_by_market, markets, line_buckets):
+    """Evaluate one holdout game using a different factor mix for each market."""
+    hs, aas, hg, ag = row['hs'], row['aas'], row['hg'], row['ag']
+
+    p_h2h = _blend_candidate_prediction(row['predictions'], weights_by_market['h2h'])
+    markets['h2h'].extend(_market_prediction_rows(p_h2h, row, 'h2h'))
+    sh = _poisson(p_h2h['home_shots'])
+    sa = _poisson(p_h2h['away_shots'])
+    ph, _, pa = _h2h(sh, sa)
+    pick_home = ph >= pa
+    h2h_conf = ph if pick_home else pa
+    h2h_ok = hs > aas if pick_home else aas > hs
+
+    p_team = _blend_candidate_prediction(row['predictions'], weights_by_market['team'])
+    for line in TEAM_SHOT_LINES:
+        _record_line(line_buckets['team'][line], p_team['home_shots'], hs, line)
+        _record_line(line_buckets['team'][line], p_team['away_shots'], aas, line)
+    markets['team'].extend(line_buckets['team'][27.5][-2:])
+
+    p_total = _blend_candidate_prediction(row['predictions'], weights_by_market['total'])
+    total_expected = p_total['home_shots'] + p_total['away_shots']
+    for line in TOTAL_SHOT_LINES:
+        _record_line(line_buckets['total'][line], total_expected, hs + aas, line)
+    markets['total'].append(line_buckets['total'][56.5][-1])
+
+    p_goals = _blend_candidate_prediction(row['predictions'], weights_by_market['goals'])
+    goal_expected = p_goals['home_goals'] + p_goals['away_goals']
+    for line in GOAL_LINES:
+        _record_line(line_buckets['goals'][line], goal_expected, hg + ag, line, 55)
+    markets['goals'].append(line_buckets['goals'][5.5][-1])
+
+    p_winner = _blend_candidate_prediction(row['predictions'], weights_by_market['winner'])
+    markets['winner'].extend(_market_prediction_rows(p_winner, row, 'winner'))
+
+    return {
+        'pick_home': pick_home,
+        'h2h_conf': h2h_conf,
+        'h2h_ok': h2h_ok,
+        'h2h_prediction': p_h2h,
+    }
+
+
+def _model4_train_test(tuning_rows, empty_markets, empty_lines):
+    """Market-specific Model 4.
+
+    Each market selects its own recency/opponent/context weights on the older
+    60% of games. The selected weights are then frozen and evaluated only on
+    the newer 40% holdout.
+    """
+    order = ('h2h', 'team', 'total', 'goals', 'winner')
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    n = len(ordered)
+    if n < 60:
+        return {'available': False, 'reason': 'Model 4 potřebuje alespoň 60 vyhodnocených zápasů.'}
+    split = max(36, int(n * .60))
+    split = min(split, n - 24)
+    train, test = ordered[:split], ordered[split:]
+
+    recency_grid = (0.0, .25, .50, .75, 1.0)
+    opponent_grid = (0.0, .10, .20, .30, .40)
+    context_grid = (0.0, .10, .20, .30)
+    weights_by_market = {}
+    train_details = {}
+    total_tested = 0
+
+    for market in order:
+        baseline_rows = _collect_one_market(train, market, use_v1=True)
+        baseline_brier = _market_brier(baseline_rows)
+        best = None
+        tested = 0
+        for wr in recency_grid:
+            for wo in opponent_grid:
+                for wc in context_grid:
+                    if wr + wo + wc > 1.0 + 1e-9:
+                        continue
+                    weights = {'recency': wr, 'opponent': wo, 'context': wc}
+                    objective, raw_brier = _market_weight_objective(train, market, weights)
+                    tested += 1
+                    if best is None or objective < best['objective']:
+                        best = {'weights': weights, 'objective': objective, 'brier': raw_brier}
+        total_tested += tested
+        weights_by_market[market] = best['weights']
+        train_details[market] = {
+            'weights': best['weights'], 'grid_tested': tested,
+            'train_brier_v1': baseline_brier, 'train_brier_m4': best['brier'],
+            'train_brier_gain': None if baseline_brier is None or best['brier'] is None else baseline_brier - best['brier'],
+            'objective': best['objective'],
+        }
+
+    train_m4 = {m: _collect_one_market(train, m, weights=weights_by_market[m]) for m in order}
+    test_m4 = {m: _collect_one_market(test, m, weights=weights_by_market[m]) for m in order}
+    calibration = _heldout_calibration(train_m4, test_m4)
+
+    v1_markets, m4_markets = empty_markets(), empty_markets()
+    v1_lines, m4_lines = empty_lines(), empty_lines()
+    rows_out = []
+    for row in test:
+        p1 = row['predictions']['v1']
+        e1 = _evaluate_model_prediction(
+            p1, row['hs'], row['aas'], row['hg'], row['ag'], row['regulation'], v1_markets, v1_lines
+        )
+        e4 = _fill_market_specific_model(row, weights_by_market, m4_markets, m4_lines)
+        p4 = e4['h2h_prediction']
+        rows_out.append({
+            'date': row['date'], 'matchup': row['matchup'],
+            'actual_shots': f"{int(row['hs'])}:{int(row['aas'])}",
+            'expected_shots_v1': f"{p1['home_shots']:.1f}:{p1['away_shots']:.1f}",
+            'expected_shots_m4_h2h': f"{p4['home_shots']:.1f}:{p4['away_shots']:.1f}",
+            'h2h_pick_v1': row['home'] if e1['pick_home'] else row['away'],
+            'h2h_probability_v1': e1['h2h_conf'], 'h2h_correct_v1': bool(e1['h2h_ok']),
+            'h2h_pick_m4': row['home'] if e4['pick_home'] else row['away'],
+            'h2h_probability_m4': e4['h2h_conf'], 'h2h_correct_m4': bool(e4['h2h_ok']),
+        })
+
+    v1_summary, m4_summary = _summaries(v1_markets), _summaries(m4_markets)
+    holdout_compare = {}
+    for market in order:
+        a, b = v1_summary[market], m4_summary[market]
+        holdout_compare[market] = {
+            'label': b['label'], 'n': min(a['n'], b['n']),
+            'accuracy_v1': a['accuracy'], 'accuracy_m4': b['accuracy'],
+            'accuracy_delta': None if a['accuracy'] is None or b['accuracy'] is None else b['accuracy'] - a['accuracy'],
+            'brier_v1': a['brier'], 'brier_m4': b['brier'],
+            'brier_gain': None if a['brier'] is None or b['brier'] is None else a['brier'] - b['brier'],
+        }
+        train_details[market].update({
+            'label': b['label'],
+            'holdout_brier_v1': a['brier'], 'holdout_brier_m4': b['brier'],
+            'holdout_brier_gain': None if a['brier'] is None or b['brier'] is None else a['brier'] - b['brier'],
+        })
+
+    train_dates = [x['date'] for x in train]
+    test_dates = [x['date'] for x in test]
+    return {
+        'available': True,
+        'train_n': len(train), 'test_n': len(test),
+        'train_from': min(train_dates), 'train_to': max(train_dates),
+        'test_from': min(test_dates), 'test_to': max(test_dates),
+        'weights_by_market': weights_by_market,
+        'market_details': train_details,
+        'grid_tested_total': total_tested,
+        'holdout_compare': holdout_compare,
+        'calibration': calibration,
+        'holdout_models': {
+            'v1': {'markets': v1_summary, 'lines': _line_summaries(v1_lines)},
+            'm4': {'markets': m4_summary, 'lines': _line_summaries(m4_lines)},
+        },
+        'holdout_games': list(reversed(rows_out)),
+    }
+
 def run_backtest(team, season_start, game_limit=10):
     started = time.time()
     targets = _prepare_backtest_targets(team, season_start, game_limit)
@@ -1144,7 +1349,7 @@ def run_backtest(team, season_start, game_limit=10):
     travel_vals = [float(v) for x in factor_rows for v in (x.get('home_travel_km'), x.get('away_travel_km')) if v is not None]
     factor_summary['avg_travel_km'] = sum(travel_vals)/len(travel_vals) if travel_vals else None
 
-    model3 = _model3_train_test(tuning_rows, empty_markets, empty_lines)
+    model4 = _model4_train_test(tuning_rows, empty_markets, empty_lines)
 
     return {
         'team': team, 'scope': 'league' if team == 'ALL' else 'team',
@@ -1153,10 +1358,10 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model3': model3, 'games': game_rows,
-        'warning': ('0.14 přidává Model 3 s konzervativními vahami. Váhy se hledají pouze na starších 60 % zápasů a finálně se hodnotí '
-                    'na novějších 40 %, které výběr vah neviděl. Kalibrace Modelu 3 se také učí jen na train části. Živá Analýza '
-                    'stále používá Model 1, dokud Model 3 neprokáže stabilní league-wide zlepšení na větším vzorku. Historické kurzy bookmakerů nejsou součástí backtestu.'),
+        'model4': model4, 'games': game_rows,
+        'warning': ('0.15 přidává Model 4 s vlastními vahami faktorů pro každý trh. Váhy se hledají pouze na starších 60 % zápasů a finálně se hodnotí '
+                    'na novějších 40 %, které výběr vah neviděl. Kalibrace Modelu 4 se také učí jen na train části. Živá Analýza '
+                    'stále používá Model 1, dokud tržně specifický Model 4 neprokáže stabilní league-wide zlepšení na větším vzorku. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
 
@@ -1178,7 +1383,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.14', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.15', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
