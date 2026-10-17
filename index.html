@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NHL Team Shots Analyzer 0.26</title>
+<title>NHL Team Shots Analyzer 0.27</title>
 <style>
 :root{
   color-scheme:dark;--bg:#07101a;--bg2:#0a1522;--panel:#0d1b2a;--panel2:#101f31;
@@ -91,96 +91,109 @@ label{color:#64748b}.field,select,input{background:#fff;color:#111827;border:1px
   .evGrid{grid-template-columns:repeat(3,1fr)}.metric{padding:8px 4px}.metric b{font-size:15px}
 }
 
+
+/* 0.27 REAL REDESIGN */
+:root{--v27-blue:#1267e8;--v27-blue-dark:#0f4ca8;--v27-blue-soft:#edf5ff;--v27-green:#16a34a;--v27-green-soft:#effcf3;--v27-red:#e11d48;--v27-red-soft:#fff1f3;--v27-text:#0f1f3d;--v27-muted:#71809a;--v27-border:#e4eaf1;--v27-bg:#f6f8fb}
+body{background:var(--v27-bg);color:var(--v27-text)}.app{max-width:1280px}.topbar{border:0;box-shadow:0 1px 0 #e8edf3;background:#fff}.brandMark{background:linear-gradient(145deg,#2284ff,#0f5dd8);border:0;color:#fff;font-size:0;position:relative}.brandMark:before{content:"▥";font-size:20px;font-weight:900}.brand h1,.brand h1 span{color:#10213f}.sub{display:none}.nav button{border:0;background:#fff;color:#53627a;font-weight:800}.nav button.active{background:#eaf3ff;color:#1767d8;border:0}
+.v27Selector{padding:16px 18px;margin:16px 0 14px;border-radius:18px}.v27Selector .selectorGrid{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.v27Selector .fixtureRow{grid-template-columns:minmax(0,1fr) 220px;gap:12px}.v27Selector label{font-size:12px;font-weight:700;color:#66758e}.v27Selector select,.v27Selector input{min-height:44px;border-radius:10px}.run{background:linear-gradient(135deg,#1767df,#0f4ca8);border-radius:10px;box-shadow:0 8px 18px #1767df22}.run:hover{background:linear-gradient(135deg,#0f5fd3,#0b438f)}
+.analysisV27{display:grid;gap:14px}.analysisV27[hidden]{display:none!important}.v27Hero{padding:0;overflow:hidden}.v27Hero .matchMeta{padding:14px 18px 0;font-size:11px}.v27Hero .matchInner{grid-template-columns:1fr 72px 1fr;padding:18px 28px 20px}.v27Hero .logoWrap{width:92px;height:92px;border:0;box-shadow:none}.v27Hero .logoWrap img{width:86px;height:86px}.v27Hero .teamName{font-size:20px;color:#0f1f3d}.v27Hero .homeAway{display:inline-flex;padding:4px 10px;border-radius:999px;background:#edf5ff;color:#1566d8;font-size:10px;font-weight:800;text-transform:uppercase}.vsCircle{width:52px;height:52px;border-radius:50%;background:#eef5ff;display:grid;place-items:center;font-size:18px;font-weight:900;color:#253858;margin:auto}.heroNumbers{display:grid;gap:1px;margin-top:7px}.heroNumbers b{font-size:26px;color:#0f1f3d}.heroNumbers small{font-size:10px;color:#76849b}.heroGoalLine{border-top:1px solid #edf1f5;background:#fbfcfe;padding:10px 18px;display:flex;justify-content:center;gap:10px;align-items:center;color:#71809a}.heroGoalLine b{font-size:17px;color:#0f1f3d}
+.v27Summary .cardTitle,.v27BetCard .cardTitle{font-size:16px}.cardTitle.blueTitle:before{background:var(--v27-blue)}.cardTitle.redTitle:before{background:var(--v27-red)}.v27Summary .formRow{gap:12px}.v27Summary .statBox{padding:16px;border-radius:14px}.v27Summary .statBox b{font-size:30px}.summarySub{margin-top:10px;padding:10px 12px;border-radius:10px;background:#f5f8fc;color:#65748c;font-size:11px}
+.v27BetCard{padding:16px}.v27BetCard .marketTabs{gap:8px}.v27BetCard .marketTabs button{min-height:42px;border-radius:9px;background:#f1f4f8;border:0;color:#53627a;font-size:11px}.v27BetCard .marketTabs button.active{background:linear-gradient(135deg,#2080ff,#1267e8);color:#fff;box-shadow:0 6px 15px #1267e822}.marketControls{margin-top:10px}.v27BetCard .marketResult{background:linear-gradient(180deg,#f3fff6,#effcf3);border:1px solid #d2f3db;padding:18px;border-radius:15px}.v27BetCard .prob{font-size:34px}.v27BetCard .prob.good{color:#0f9f43!important}.v27BetCard .prob.bad{color:#e11d48!important}.v27BetCard .bar{height:12px;margin-top:12px}.v27BetCard .note{border:0;background:#f8fafc;border-radius:10px;margin-top:10px;padding:9px 11px}
+.v27Grid{display:grid;gap:14px}.v27Grid.twoCols{grid-template-columns:1fr 1fr}.modelCard .modelPanel{background:#f8fbff;border:1px solid #dfeeff;border-radius:14px;padding:14px;min-height:110px}.modelCard .prodLine{background:#effcf3;border-color:#c9efd4;color:#176d38;border-radius:12px}.modelCard .prodLine strong{color:#176d38}
+.detailsBox{margin-top:8px;border:1px solid #e5eaf0;border-radius:12px;background:#fbfcfd}.detailsBox summary,.advancedCard>summary{cursor:pointer;font-weight:800;color:#40506a;padding:11px 13px;list-style:none}.detailsBox summary::-webkit-details-marker,.advancedCard>summary::-webkit-details-marker{display:none}.detailsBox summary:after,.advancedCard>summary:after{content:"＋";float:right;color:#8a98ad}.detailsBox[open] summary:after,.advancedCard[open]>summary:after{content:"−"}.lineupFactor{border:0;border-top:1px solid #edf1f5;border-radius:0;background:#fff;margin:0;padding:12px}.tipAction{margin-top:10px}.tipAction .secondary{width:100%}
+.historyCard .historyHead{display:flex;justify-content:space-between;gap:12px;align-items:center}.historyCard .chartTabs{margin-left:auto}.historyCard .chart{height:150px;margin:12px 0 14px}.historyCard .chart div{background:#2d80ee}.historyCard .chart div.away{background:#c4d7ef}.historyCard #history table{font-size:10px}.advancedCard{padding:0}.advancedInner{padding:0 14px 14px}.good{color:var(--v27-green)!important}.bad{color:var(--v27-red)!important}.dangerNote{background:#fff7f7;color:#9f1239;border-color:#ffd5df}.metric b{font-size:20px}.evGrid .metric{padding:12px}.factor{border-radius:12px}.card{border-radius:18px;box-shadow:0 5px 16px #0f172a0a}table th{background:#f8fafc}.lineupTeams{gap:10px}.lineupTeam{border-radius:12px}
+@media(max-width:900px){.v27Grid.twoCols{grid-template-columns:1fr}.v27Selector .selectorGrid{grid-template-columns:1fr 1fr}.v27Selector .fixtureRow{grid-template-columns:1fr 180px}}
+@media(max-width:560px){.app{padding:0 10px 30px}.topbar{padding:10px 0}.brand h1{font-size:16px}.nav button{font-size:11px;padding:9px 7px}.v27Selector{padding:12px}.v27Selector .selectorGrid{grid-template-columns:1fr 1fr;gap:8px}.v27Selector .fixtureRow{grid-template-columns:1fr;margin-top:8px}.v27Hero .matchInner{padding:16px 10px;grid-template-columns:1fr 52px 1fr}.v27Hero .logoWrap{width:68px;height:68px}.v27Hero .logoWrap img{width:64px;height:64px}.v27Hero .teamName{font-size:14px}.heroNumbers b{font-size:22px}.vsCircle{width:42px;height:42px;font-size:14px}.v27Summary .statBox{padding:12px 10px}.v27Summary .statBox b{font-size:24px}.v27BetCard{padding:12px}.v27BetCard .marketTabs{display:flex;overflow-x:auto}.v27BetCard .marketTabs button{min-width:105px}.v27BetCard .probRow{grid-template-columns:1fr 56px 1fr}.v27BetCard .prob{font-size:28px}.historyCard .historyHead{align-items:flex-start;flex-direction:column}.historyCard .chartTabs{margin-left:0}.historyCard .chart{height:120px}}
+
 </style>
 </head>
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.26</div></div></div>
+    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.27</div></div></div>
     <nav class="nav"><button id="navAnalysis" class="active">▥ Analýza</button><button id="navBacktest">⌁ Backtest</button><button id="navTips">↻ Moje tipy</button></nav>
   </header>
 
   <main id="analysisPage">
-    <section class="selector">
-      <div class="sectionTitle">Výběr zápasu</div>
+    <section class="selector v27Selector">
       <div class="selectorGrid">
         <div><label>Tým A</label><select id="teamA"></select></div>
         <div><label>Tým B</label><select id="teamB"></select></div>
         <div><label>Domácí tým</label><select id="venue"><option value="A">Tým A doma</option><option value="B">Tým B doma</option></select></div>
-        <div><label>Poslední zápasy</label><select id="sample"><option>5</option><option>10</option><option>20</option><option>30</option><option value="season">Celá sezóna</option><option value="auto" selected>Automatická forma</option></select></div>
+        <div><label>Forma týmu</label><select id="sample"><option>5</option><option>10</option><option>20</option><option>30</option><option value="season">Celá sezóna</option><option value="auto" selected>Automatická forma</option></select></div>
       </div>
-      <div class="fixtureRow"><div><label>Konkrétní zápas z rozpisu NHL</label><select id="fixture"><option value="">Načítám…</option></select></div><button id="run" class="run">⌕ Načíst a analyzovat</button></div>
+      <div class="fixtureRow"><div><label>Vyberte zápas</label><select id="fixture"><option value="">Načítám…</option></select></div><button id="run" class="run">⌕ Načíst a analyzovat</button></div>
       <div class="status"><span id="fixtureStatus"></span><span id="status"></span></div>
     </section>
 
-    <section id="results" hidden class="dashboard">
-      <div class="col">
-        <article class="card matchCard">
-          <div class="matchMeta"><span id="matchDate">Základní informace</span><span id="updated"></span></div>
-          <div class="matchInner">
-            <div class="teamBadge"><div class="logoWrap" id="logoA"><span class="fallbackLogo">A</span></div><div class="teamName" id="heroNameA">Tým A</div><div class="homeAway" id="homeAwayA"></div></div>
-            <div class="vs">VS</div>
-            <div class="teamBadge"><div class="logoWrap" id="logoB"><span class="fallbackLogo">B</span></div><div class="teamName" id="heroNameB">Tým B</div><div class="homeAway" id="homeAwayB"></div></div>
-          </div>
-          <div class="modelStrip"><div><b id="heroShotsA">—</b><small>oček. střely A</small></div><div><b id="heroGoals">—</b><small>oček. góly</small></div><div><b id="heroShotsB">—</b><small>oček. střely B</small></div></div>
-        </article>
+    <section id="results" hidden class="analysisV27">
+      <article class="card matchCard v27Hero">
+        <div class="matchMeta"><span id="matchDate">Základní informace</span><span id="updated"></span></div>
+        <div class="matchInner">
+          <div class="teamBadge"><div class="logoWrap" id="logoA"><span class="fallbackLogo">A</span></div><div class="teamName" id="heroNameA">Tým A</div><div class="homeAway" id="homeAwayA"></div><div class="heroNumbers"><b id="heroShotsA">—</b><small>oček. střely</small></div></div>
+          <div class="vsCircle">VS</div>
+          <div class="teamBadge"><div class="logoWrap" id="logoB"><span class="fallbackLogo">B</span></div><div class="teamName" id="heroNameB">Tým B</div><div class="homeAway" id="homeAwayB"></div><div class="heroNumbers"><b id="heroShotsB">—</b><small>oček. střely</small></div></div>
+        </div>
+        <div class="heroGoalLine"><span>Očekávané góly</span><b id="heroGoals">—</b></div>
+      </article>
 
+      <article class="card v27Summary">
+        <div class="cardTitle blueTitle">Výsledek analýzy</div>
+        <div id="rightSummary" class="formRow"><div class="statBox"><small id="sumNameA">Tým A</small><b id="sumAvgA">—</b><small>střely / zápas</small></div><div class="statBox"><small id="sumNameB">Tým B</small><b id="sumAvgB">—</b><small>střely / zápas</small></div></div>
+        <div class="summarySub" id="expected"></div>
+      </article>
+
+      <article class="card v27BetCard">
+        <div class="cardTitle redTitle">Tip sázky</div>
+        <div class="marketTabs" id="markets"><button data-m="h2h" class="active">Více střel</button><button data-m="team">Střely týmu ±</button><button data-m="total">Celkové střely ±</button><button data-m="goals">Góly ±</button><button data-m="winner">Vítěz / dvojtip</button></div>
+        <div id="controls" class="marketControls"></div>
+        <div id="marketResult" class="marketResult"></div>
+        <div id="explanation" class="note"></div>
+      </article>
+
+      <div class="v27Grid twoCols">
         <article class="card">
-          <div class="cardTitle">Forma a kvalita dat</div>
+          <div class="cardTitle blueTitle">Forma a kvalita dat</div>
           <div class="tableWrap" id="formTable"></div>
           <div class="micro" id="trend"></div><div class="note" id="quality"></div>
         </article>
-
-        <article class="card">
-          <div class="cardTitle">Typ sázky</div>
-          <div class="marketTabs" id="markets"><button data-m="h2h" class="active">Více střel</button><button data-m="team">Střely týmu ±</button><button data-m="total">Celkové střely ±</button><button data-m="goals">Góly ±</button><button data-m="winner">Vítěz / dvojtip</button></div>
-          <div id="controls" style="margin-top:9px"></div>
-          <div id="marketResult" class="marketResult"></div>
-          <div id="explanation" class="note"></div>
-        </article>
-
-        <article class="card">
-          <div class="cardTitle">Vyhodnocení kurzu</div>
-          <div class="inlineControls"><div><label>Výsledek sázky</label><select id="selection"></select></div><div><label>Ruční desetinný kurz</label><input id="odds" type="number" min="1.01" step="0.01" inputmode="decimal" placeholder="Např. 1.85"></div></div>
-          <div class="evGrid"><div class="metric"><span>Modelová pravděpodobnost</span><b id="evProb">—</b></div><div class="metric"><span>Férový kurz</span><b id="fairOdds">—</b></div><div class="metric"><span>Modelové EV</span><b id="evValue">—</b></div></div>
-          <div class="dangerNote" id="evNote">Kurz zadej ručně. U trhu Více střel se po načtení použije validovaný LOCK 5v5+tied, pokud je dostupný.</div>
-          <div style="margin-top:8px"><button class="secondary" id="copyTip">Převzít výběr do Moje tipy</button></div>
+        <article class="card modelCard">
+          <div class="cardTitle blueTitle">Produkční model 0.27</div>
+          <div id="shadowInfo" class="modelPanel">Pro trh Více střel se po spuštění načte ověřený LOCK 5v5+tied. Pokud není dost historických play-by-play dat, aplikace automaticky použije Model 1.</div>
         </article>
       </div>
 
-      <div class="col">
+      <div class="v27Grid twoCols">
         <article class="card">
-          <div class="cardTitle">Výsledek analýzy</div>
-          <div id="rightSummary" class="formRow"><div class="statBox"><small id="sumNameA">Tým A</small><b id="sumAvgA">—</b><small>střely / zápas</small></div><div class="statBox"><small id="sumNameB">Tým B</small><b id="sumAvgB">—</b><small>střely / zápas</small></div></div>
-          <div class="micro" id="expected" style="margin-top:9px"></div>
-        </article>
-
-        <article class="card">
-          <div class="cardTitle">Produkční model 0.26 · Více střel</div>
-          <div id="shadowInfo" class="note">Pro trh Více střel se po spuštění načte ověřený LOCK 5v5+tied. Pokud není dost historických play-by-play dat, aplikace automaticky použije Model 1. Gólový LOCK zůstává pouze shadow.</div>
-        </article>
-
-        <article class="card">
-          <div class="cardTitle">Odpočinek, cestování a sestavy</div>
+          <div class="cardTitle blueTitle">Odpočinek, cestování a sestavy</div>
           <div class="factorList">
             <div class="factor" id="restTravel">Vyber konkrétní zápas.</div>
-            <div class="factor" id="lineupInfo"><span class="lineupEmpty">Po spuštění analýzy načtu oficiální denní projekci sestav NHL.com.</span></div>
+            <details class="detailsBox"><summary>Zobrazit projektované sestavy</summary><div class="factor lineupFactor" id="lineupInfo"><span class="lineupEmpty">Po spuštění analýzy načtu oficiální denní projekci sestav NHL.com.</span></div></details>
           </div>
         </article>
 
         <article class="card">
-          <div class="cardTitle">Scénář změny výkonu</div>
-          <div class="scenarioGrid"><div><label>Tým A · střely</label><input id="adjShotsA" type="number" min="-15" max="15" step="0.5" value="0"></div><div><label>Tým B · střely</label><input id="adjShotsB" type="number" min="-15" max="15" step="0.5" value="0"></div><div><label>Tým A · góly</label><input id="adjGoalsA" type="number" min="-3" max="3" step="0.1" value="0"></div><div><label>Tým B · góly</label><input id="adjGoalsB" type="number" min="-3" max="3" step="0.1" value="0"></div></div>
-          <div class="scenarioFoot"><small id="scenarioSummary">Výchozí model · bez ručních změn.</small><button class="secondary" id="resetScenario">Vynulovat</button></div>
-        </article>
-
-        <article class="card">
-          <div class="cardTitle">Poslední zápasy a průběh střel</div>
-          <div class="chartTabs"><button id="chartA" class="active">Tým A</button><button id="chartB">Tým B</button></div>
-          <div class="chart" id="chart"></div><div class="tableWrap" id="history"></div>
-          <div class="micro" id="hitRates" style="margin-top:8px"></div>
+          <div class="cardTitle blueTitle">Vyhodnocení kurzu</div>
+          <div class="inlineControls"><div><label>Výsledek sázky</label><select id="selection"></select></div><div><label>Nabízený kurz</label><input id="odds" type="number" min="1.01" step="0.01" inputmode="decimal" placeholder="Např. 1.85"></div></div>
+          <div class="evGrid"><div class="metric"><span>Modelová pravděpodobnost</span><b id="evProb">—</b></div><div class="metric"><span>Férový kurz</span><b id="fairOdds">—</b></div><div class="metric"><span>Modelové EV</span><b id="evValue">—</b></div></div>
+          <div class="dangerNote" id="evNote">Kurz zadej ručně. U trhu Více střel se po načtení použije validovaný LOCK 5v5+tied, pokud je dostupný.</div>
+          <div class="tipAction"><button class="secondary" id="copyTip">Převzít výběr do Moje tipy</button></div>
         </article>
       </div>
+
+      <article class="card historyCard">
+        <div class="historyHead"><div class="cardTitle blueTitle">Poslední zápasy a průběh střel</div><div class="chartTabs"><button id="chartA" class="active">Tým A</button><button id="chartB">Tým B</button></div></div>
+        <div class="chart" id="chart"></div><div class="tableWrap" id="history"></div>
+        <div class="micro" id="hitRates"></div>
+      </article>
+
+      <details class="card advancedCard">
+        <summary>Pokročilé nástroje a scénář změny výkonu</summary>
+        <div class="advancedInner">
+          <div class="scenarioGrid"><div><label>Tým A · střely</label><input id="adjShotsA" type="number" min="-15" max="15" step="0.5" value="0"></div><div><label>Tým B · střely</label><input id="adjShotsB" type="number" min="-15" max="15" step="0.5" value="0"></div><div><label>Tým A · góly</label><input id="adjGoalsA" type="number" min="-3" max="3" step="0.1" value="0"></div><div><label>Tým B · góly</label><input id="adjGoalsB" type="number" min="-3" max="3" step="0.1" value="0"></div></div>
+          <div class="scenarioFoot"><small id="scenarioSummary">Výchozí model · bez ručních změn.</small><button class="secondary" id="resetScenario">Vynulovat</button></div>
+        </div>
+      </details>
     </section>
   </main>
 
@@ -203,7 +216,7 @@ label{color:#64748b}.field,select,input{background:#fff;color:#111827;border:1px
   <main id="backtestPage" hidden>
     <section class="selector">
       <div class="sectionTitle">Historický backtest <span class="betaTag">BETA</span></div>
-      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.26 povyšuje <strong>LOCK 5v5+tied</strong> do živé Analýzy pouze pro trh Více střel. Model prošel jednorázovým lockboxem 2021/22 a při nedostatečné PBP historii se bezpečně vrátí na Model 1. Pravděpodobnost se po lockboxu dodatečně nepřelaďuje; confidence pásma slouží jako ověřený kontext s 95% intervalem spolehlivosti.</div>
+      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.27 povyšuje <strong>LOCK 5v5+tied</strong> do živé Analýzy pouze pro trh Více střel. Model prošel jednorázovým lockboxem 2021/22 a při nedostatečné PBP historii se bezpečně vrátí na Model 1. Pravděpodobnost se po lockboxu dodatečně nepřelaďuje; confidence pásma slouží jako ověřený kontext s 95% intervalem spolehlivosti.</div>
       <div class="backtestControls">
         <div><label>Rozsah / tým</label><select id="btTeam"></select></div>
         <div><label>Sezóna</label><select id="btSeason"><option value="20212022" selected>2021/22 · LOCKBOX (nezávislý test)</option><option value="MULTI4">2022/23 + 2023/24 + 2024/25 + 2025/26</option><option value="MULTI3">2023/24 + 2024/25 + 2025/26</option><option value="MULTI2">2024/25 + 2025/26</option><option value="20252026">2025/26</option><option value="20242025">2024/25</option><option value="20232024">2023/24</option><option value="20222023">2022/23</option><option value="20262027">2026/27</option></select></div>
@@ -243,7 +256,7 @@ label{color:#64748b}.field,select,input{background:#fff;color:#111827;border:1px
     </section>
   </main>
 
-  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Verze 0.26 používá LOCK 5v5+tied jako hlavní model pouze pro Více střel; ostatní trhy zůstávají na Modelu 1 a gólový kandidát je shadow. Při chybějící PBP historii se Více střel vrátí na Model 1. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
+  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Verze 0.27 používá LOCK 5v5+tied jako hlavní model pouze pro Více střel; ostatní trhy zůstávají na Modelu 1 a gólový kandidát je shadow. Při chybějící PBP historii se Více střel vrátí na Model 1. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
 </div>
 <script>
 const teams={ANA:'Anaheim Ducks',BOS:'Boston Bruins',BUF:'Buffalo Sabres',CGY:'Calgary Flames',CAR:'Carolina Hurricanes',CHI:'Chicago Blackhawks',COL:'Colorado Avalanche',CBJ:'Columbus Blue Jackets',DAL:'Dallas Stars',DET:'Detroit Red Wings',EDM:'Edmonton Oilers',FLA:'Florida Panthers',LAK:'Los Angeles Kings',MIN:'Minnesota Wild',MTL:'Montreal Canadiens',NSH:'Nashville Predators',NJD:'New Jersey Devils',NYI:'New York Islanders',NYR:'New York Rangers',OTT:'Ottawa Senators',PHI:'Philadelphia Flyers',PIT:'Pittsburgh Penguins',SEA:'Seattle Kraken',SJS:'San Jose Sharks',STL:'St. Louis Blues',TBL:'Tampa Bay Lightning',TOR:'Toronto Maple Leafs',UTA:'Utah Mammoth',VAN:'Vancouver Canucks',VGK:'Vegas Golden Knights',WSH:'Washington Capitals',WPG:'Winnipeg Jets'};

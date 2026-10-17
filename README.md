@@ -1,20 +1,16 @@
-# NHL Team Shots Analyzer 0.26
+# NHL Team Shots Analyzer 0.27
 
-Verze 0.26 je zaměřená na **přehlednost a jednoduchý světlý vzhled**, bez změny ověřené produkční logiky trhu Více střel.
+Verze 0.27 je skutečný redesign hlavní obrazovky Analýzy podle schváleného světlého návrhu. Výpočty a produkční logika zůstávají stejné jako v 0.26.
 
-## Nový vzhled
-- bílý podklad a světlé karty;
-- výrazně méně vizuálního šumu;
-- tmavé neutrální ovládací prvky místo barev, které by mohly působit jako hodnocení;
-- zelená = lepší / pozitivní výsledek, červená = horší / negativní výsledek;
-- u barev je současně šipka nahoru/dolů, takže význam není závislý jen na barvě;
-- NHL loga zůstávají přímo u týmů a pravděpodobností;
-- na mobilu se důležité části řadí dříve: zápas → souhrn → trh → kurz/EV → produkční model; detailní data následují až potom.
+## Nové rozložení
+- velká horní karta zápasu s logy NHL týmů, domácí/venkovní rolí a očekávanými střelami;
+- samostatná karta Výsledek analýzy;
+- dominantní karta Tip sázky s pěti trhy a výrazným zeleno/červeným porovnáním;
+- Forma a kvalita dat + Produkční model vedle sebe;
+- Odpočinek/cestování/sestavy + Vyhodnocení kurzu vedle sebe;
+- graf posledních zápasů přes celou šířku;
+- ruční scénář výkonu je schovaný v rozbalovací sekci;
+- projektované sestavy jsou rozbalovací, protože jsou detailní a nejsou započítané do modelu.
 
-## Analýza
-Produkční `LOCK 5v5+tied` pro trh **Více střel** zůstává beze změny. Vzájemné pravděpodobnosti se nyní vizuálně porovnají: vyšší hodnota je zelená, nižší červená a remíza zůstává neutrální.
-
-Stejná logika přehlednosti se používá i u over/under a 1/X/2 zobrazení. Barvy neznamenají sázkové doporučení; pouze rychle ukazují, která modelová pravděpodobnost je vyšší nebo zda se metrika zlepšila/zhoršila.
-
-## Backtest
-Výpočty, Model 12 Lockbox, confidence pásma i deep režim jsou stejné jako v 0.25. Tabulky jsou pouze převedené do světlého vzhledu a pozitivní/negativní změny jsou výraznější.
+## Model
+Produkční `LOCK 5v5+tied` pro trh Více střel se nemění. Fallback na Model 1, lockbox validace, confidence pásma, Backtest a Moje tipy zůstávají funkčně stejné.

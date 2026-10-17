@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.26 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.27 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -199,7 +199,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.26',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.27',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -236,7 +236,7 @@ def _nhl_json(path, ttl=21600):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.26', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.27', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -3624,7 +3624,7 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
         'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'model12': model12, 'deep_mode': deep_mode, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
-        'warning': ('0.26 povyšuje LOCK 5v5+tied do živé Analýzy pouze pro trh Více střel; pokud chybí dostatečná PBP historie, použije se Model 1 fallback. Model 12 lockbox 2021/22 a 95% Wilsonovy intervaly zůstávají validačním základem. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
+        'warning': ('0.27 zachovává LOCK 5v5+tied do živé Analýzy pouze pro trh Více střel; pokud chybí dostatečná PBP historie, použije se Model 1 fallback. Model 12 lockbox 2021/22 a 95% Wilsonovy intervaly zůstávají validačním základem. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
                     'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. V živé Analýze je produkční pouze LOCK 5v5+tied pro Více střel; gólový LOCK a ostatní kandidáti zůstávají shadow. '
                     'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
@@ -3668,7 +3668,7 @@ def _run_backtest_job(job_id, team, start, games):
     except MemoryError:
         payload = {'status': 'error',
                    'error': 'Serveru došla paměť při backtestu',
-                   'detail': 'Zkus verzi 0.26 znovu; deep režim má výrazně menší paměťové nároky.',
+                   'detail': 'Zkus verzi 0.27 znovu; deep režim má výrazně menší paměťové nároky.',
                    'finished_at': time.time()}
     except Exception as exc:
         payload = {'status': 'error', 'error': 'Backtest se nepodařilo dokončit',
@@ -3710,7 +3710,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.26', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.27', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
