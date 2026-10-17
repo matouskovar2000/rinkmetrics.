@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.24 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.25 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -63,6 +63,34 @@ _box_summary_cache_lock = threading.Lock()
 _backtest_jobs = {}
 _backtest_jobs_lock = threading.Lock()
 _BACKTEST_JOB_TTL = 4 * 3600
+
+# 0.25 production context for the promoted H2H model. These are the untouched
+# 2021/22 lockbox results from Model 12. They are descriptive validation
+# metadata only: the live probability itself stays the frozen LOCK 5v5+tied
+# model probability. We intentionally do not post-hoc remap the probability
+# from the same lockbox that approved the model, because that would require a
+# new independent calibration test.
+H2H_LOCKBOX_BANDS = (
+    {'threshold': .80, 'n': 41,  'accuracy': .805, 'ci95_low': .660, 'ci95_high': .898, 'strength': '80 %+ · velmi vysoká, malý vzorek'},
+    {'threshold': .75, 'n': 98,  'accuracy': .786, 'ci95_low': .695, 'ci95_high': .855, 'strength': '75 %+ · vysoká, malý vzorek'},
+    {'threshold': .70, 'n': 212, 'accuracy': .783, 'ci95_low': .723, 'ci95_high': .833, 'strength': '70 %+ · velmi silná'},
+    {'threshold': .65, 'n': 386, 'accuracy': .756, 'ci95_low': .711, 'ci95_high': .797, 'strength': '65 %+ · silná'},
+    {'threshold': .60, 'n': 599, 'accuracy': .716, 'ci95_low': .679, 'ci95_high': .751, 'strength': '60 %+ · ověřená'},
+)
+
+def _h2h_validation_band(confidence):
+    try:
+        p = float(confidence)
+    except (TypeError, ValueError):
+        return None
+    for row in H2H_LOCKBOX_BANDS:
+        if p >= row['threshold']:
+            return dict(row)
+    return {
+        'threshold': None, 'n': None, 'accuracy': None,
+        'ci95_low': None, 'ci95_high': None,
+        'strength': 'pod 60 % · standardní jistota',
+    }
 
 
 class TextExtractor(HTMLParser):
@@ -171,7 +199,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.24',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.25',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -208,7 +236,7 @@ def _nhl_json(path, ttl=21600):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.24', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.25', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -1253,7 +1281,13 @@ def _predict_game_winner_plus(home, away, game_date):
 
 
 def _shadow_analysis(home, away, game_date):
-    """Side-by-side live comparison. It never changes the production Model 1."""
+    """0.25 live comparison plus production H2H payload.
+
+    LOCK 5v5+tied is now the primary model only for the ``Více střel`` market.
+    If historical play-by-play coverage is insufficient, the payload explicitly
+    falls back to Model 1. Other live markets remain on Model 1; the goal model
+    stays shadow-only.
+    """
     p1 = _predict_game(home, away, game_date)
     ph = _predict_game_locked_h2h(home, away, game_date)
     pg = _predict_game_locked_goals(home, away, game_date)
@@ -1270,24 +1304,46 @@ def _shadow_analysis(home, away, game_date):
         over = _over(dist, line)
         return {'line': line, 'over': over, 'under': 1.0 - over}
 
+    p1_h2h = h2h_probs(p1)
+    lock_h2h = h2h_probs(ph)
+    lock_profile = ph.get('profile') or {}
+    ready = lock_profile.get('coverage') != 'fallback'
+    active_pred = ph if ready else p1
+    active_probs = lock_h2h if ready else p1_h2h
+    confidence = max(active_probs['home'], active_probs['away'])
+    signal = _h2h_validation_band(confidence) if ready else None
+
     return {
         'home': home, 'away': away, 'date': game_date,
         'production': {
             'home_shots': p1['home_shots'], 'away_shots': p1['away_shots'],
             'home_goals': p1['home_goals'], 'away_goals': p1['away_goals'],
-            'h2h': h2h_probs(p1), 'goals_55': goal_probs(p1),
+            'h2h': p1_h2h, 'goals_55': goal_probs(p1),
+        },
+        'active_h2h': {
+            'source': 'LOCK 5v5+tied' if ready else 'Model 1 fallback',
+            'ready': bool(ready), 'fallback': not bool(ready),
+            'home_shots': active_pred['home_shots'], 'away_shots': active_pred['away_shots'],
+            'h2h': active_probs, 'confidence': confidence, 'signal': signal,
+            'profile': lock_profile,
+            'validation': {
+                'season': '2021/22', 'games': 1302, 'positive_blocks': 7, 'blocks': 8,
+                'brier_v1': .226, 'brier_candidate': .225,
+                'note': 'Lockbox byl jednorázový nezávislý test; historické kurzy bookmakerů v něm nejsou.'
+            },
         },
         'locked_h2h': {
             'home_shots': ph['home_shots'], 'away_shots': ph['away_shots'],
-            'h2h': h2h_probs(ph), 'profile': ph.get('profile') or {},
+            'h2h': lock_h2h, 'profile': lock_profile,
         },
         'locked_goals': {
             'home_goals': pg['home_goals'], 'away_goals': pg['away_goals'],
             'goals_55': goal_probs(pg), 'profile': pg.get('profile') or {},
         },
-        'note': 'Shadow model pouze porovnává stabilní kandidáty; hlavní Analýza a EV zůstávají na Modelu 1.',
+        'note': ('Více střel používá v 0.25 LOCK 5v5+tied jako hlavní model, pokud je dost PBP historie; '
+                 'jinak se bezpečně vrátí na Model 1. Pravděpodobnost zůstává raw LOCK, aby se po lockboxu '
+                 'dodatečně nepřelaďovala. Góly a ostatní trhy zůstávají na Modelu 1 / shadow režimu.'),
     }
-
 
 def _normal_line_pick_row(expected, actual, line, sigma):
     sigma = max(.5, float(sigma))
@@ -3568,8 +3624,8 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
         'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'model12': model12, 'deep_mode': deep_mode, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
-        'warning': ('0.24 přidává jednorázový lockbox 2021/22 pro pevně zamknuté kandidáty a 95% Wilsonovy intervaly k confidence pásmům. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
-                    'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. Živá Analýza dál používá Model 1 a locked kandidáty pouze jako shadow porovnání. '
+        'warning': ('0.25 povyšuje LOCK 5v5+tied do živé Analýzy pouze pro trh Více střel; pokud chybí dostatečná PBP historie, použije se Model 1 fallback. Model 12 lockbox 2021/22 a 95% Wilsonovy intervaly zůstávají validačním základem. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
+                    'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. V živé Analýze je produkční pouze LOCK 5v5+tied pro Více střel; gólový LOCK a ostatní kandidáti zůstávají shadow. '
                     'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
 
@@ -3612,7 +3668,7 @@ def _run_backtest_job(job_id, team, start, games):
     except MemoryError:
         payload = {'status': 'error',
                    'error': 'Serveru došla paměť při backtestu',
-                   'detail': 'Zkus verzi 0.24 znovu; deep režim má výrazně menší paměťové nároky.',
+                   'detail': 'Zkus verzi 0.25 znovu; deep režim má výrazně menší paměťové nároky.',
                    'finished_at': time.time()}
     except Exception as exc:
         payload = {'status': 'error', 'error': 'Backtest se nepodařilo dokončit',
@@ -3654,7 +3710,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.24', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.25', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)

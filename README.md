@@ -1,26 +1,31 @@
-# NHL Team Shots Analyzer 0.24
+# NHL Team Shots Analyzer 0.25
 
-Verze 0.24 přidává poslední nezávislou kontrolu před případným povýšením locked modelu pro trh **Více střel**. Kandidát `LOCK 5v5+tied` byl zamknutý už před tímto testem; sezóna **2021/22** se proto používá jako jednorázový lockbox a na jejích výsledcích se nic nepřelaďuje.
+Verze 0.25 povyšuje `LOCK 5v5+tied` z experimentu do **živé Analýzy pro trh Více střel**. Je to první model v aplikaci, který prošel opakovaným walk-forward testem i odděleným lockboxem 2021/22.
 
-## Model 12 Lockbox
-- nový samostatný test pro **2021/22**;
-- používá všechny dostupné league-wide zápasy sezóny, u kterých existuje dost předzápasové historie;
-- porovnává Model 1 proti předem zamknutým kandidátům pro **Více střel** a **Góly**;
-- sezónu rozděluje do 4–8 chronologických bloků pouze kvůli stabilitě, nikoli kvůli trénování;
-- `PROŠEL` vyžaduje kladný celkový Brier zisk alespoň `0.0005`, zlepšení nejméně v 60 % bloků a žádný extrémně špatný blok.
+## Produkční Více střel
+- hlavní zdroj je `LOCK 5v5+tied`, postavený na 5v5 a score-tied shot-attempt share z NHL play-by-play;
+- používá pevnou 30zápasovou předzápasovou historii stejně jako ve validaci;
+- pokud není alespoň 70 % potřebné PBP historie, aplikace automaticky použije **Model 1 fallback**;
+- ruční scénář střel se může počítat nad LOCK očekáváním, ale je výslovně označen jako mimo historickou validaci.
 
-## 95% intervaly spolehlivosti
-Model 11 Confidence i nový lockbox ukazují **95% Wilsonův interval** skutečné úspěšnosti. Díky tomu je vidět rozdíl mezi např. 80 % na stovkách predikcí a 80 % na několika desítkách případů.
+## Ověřená síla signálu
+Živá Analýza u Více střel ukazuje, do kterého confidence pásma aktivní LOCK predikce spadá. Jako kontext se zobrazí skutečná úspěšnost, počet případů a 95% Wilsonův interval z nezávislého lockboxu 2021/22:
 
-U lockbox confidence tabulky se navíc Model 1 počítá na **stejných zápasech**, které vybral locked kandidát daným prahem jistoty. Tím se neporovnávají dva rozdílné vzorky.
+- 60 %+ confidence: 71,6 % na 599 případech;
+- 65 %+: 75,6 % na 386;
+- 70 %+: 78,3 % na 212;
+- 75 %+: 78,6 % na 98;
+- 80 %+: 80,5 % na 41 případech.
 
-## Doporučený test 0.24
-`Celá NHL` → `2021/22 · LOCKBOX` → `1400 zápasů`.
+Vyšší pásma mají menší vzorek, proto jsou v aplikaci označena opatrně.
 
-Server použije všechny dostupné regular-season zápasy sezóny; skutečný počet vyhodnocených zápasů může být nižší kvůli chybějící předzápasové historii, zejména u začátku sezóny a nového týmu Seattle.
+## Pravděpodobnost a EV
+Samotná produkční pravděpodobnost zůstává **raw LOCK pravděpodobností**. Po lockboxu ji dodatečně nepřemapováváme podle stejné sezóny, protože taková post-hoc kalibrace by potřebovala nový nezávislý test. Ověřená confidence pásma proto slouží jako transparentní kalibrační kontext, ne jako skryté přelaďování modelu.
 
-## Výkon
-Deep režim, kompaktní box/PBP cache, retry NHL API a průběhové procento z verze 0.23 zůstávají zachované, takže i lockbox přes celou sezonu běží stejnou úspornou cestou.
+Férový kurz a modelové EV pro trh Více střel nyní používají produkční LOCK pravděpodobnost, pokud je LOCK dostupný. Historické bookmakerové kurzy ale v backtestu stále nejsou, takže výsledky neprokazují historické ROI ani ziskovost.
 
-## Důležité
-Živá Analýza stále používá Model 1. Locked kandidáti jsou pouze shadow/validační modely a nemění hlavní EV. Historické bookmakerové kurzy nejsou součástí backtestu, takže ani úspěšný lockbox sám o sobě neprokazuje historickou sázkovou ziskovost.
+## Ostatní trhy
+Týmové střely, celkové střely, góly a 1/X/2 zůstávají v živé Analýze na Modelu 1. Gólový locked profil se dál zobrazuje pouze jako shadow, protože lockbox zatím nesplnil podmínku pro povýšení.
+
+## Validace
+Model 12 Lockbox 2021/22 zůstává v Backtestu jako auditní kontrola. V posledním běhu bylo vyhodnoceno 1302 zápasů; `LOCK 5v5+tied` zlepšil Brier přibližně z 0,226 na 0,225 a měl kladný výsledek v 7 z 8 chronologických bloků.
