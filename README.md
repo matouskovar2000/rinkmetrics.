@@ -1,6 +1,6 @@
-# NHL Team Shots Analyzer 0.30
+# NHL Team Shots Analyzer 0.31
 
-Verze 0.30 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
+Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
 - kompaktní modrobílý header a navigace;
 - výběr týmů s logy přímo v polích;
@@ -13,3 +13,7 @@ Verze 0.30 je vizuální přestavba Analýzy podle schváleného světlého mock
 - technické detaily zůstávají sekundární.
 
 LOCK 5v5+tied, Model 12 lockbox, Backtest i ostatní výpočty zůstávají funkčně stejné jako v 0.29.
+
+
+## 0.31 vzhled
+Tato verze mění pouze vizuální proporce Analýzy na mobilu tak, aby odpovídaly schválenému mockupu: větší loga, texty, výsledkové karty a tip; modelová logika se nemění.
