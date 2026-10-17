@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.31
+# NHL Team Shots Analyzer 0.32
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -17,3 +17,7 @@ LOCK 5v5+tied, Model 12 lockbox, Backtest i ostatní výpočty zůstávají funk
 
 ## 0.31 vzhled
 Tato verze mění pouze vizuální proporce Analýzy na mobilu tak, aby odpovídaly schválenému mockupu: větší loga, texty, výsledkové karty a tip; modelová logika se nemění.
+
+
+## 0.32
+Opravena mobilní typografie a velikosti prvků. Verze 0.31 byla na telefonu přepisována příliš agresivním breakpointem a text i karty se zmenšovaly pod cílový mockup. 0.32 zachovává stejné výpočty a pouze mění vzhled.
