@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.25 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.26 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -64,7 +64,7 @@ _backtest_jobs = {}
 _backtest_jobs_lock = threading.Lock()
 _BACKTEST_JOB_TTL = 4 * 3600
 
-# 0.25 production context for the promoted H2H model. These are the untouched
+# 0.26 production context for the promoted H2H model. These are the untouched
 # 2021/22 lockbox results from Model 12. They are descriptive validation
 # metadata only: the live probability itself stays the frozen LOCK 5v5+tied
 # model probability. We intentionally do not post-hoc remap the probability
@@ -199,7 +199,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.25',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.26',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -236,7 +236,7 @@ def _nhl_json(path, ttl=21600):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.25', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.26', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -668,7 +668,7 @@ def _context_adjustment(rows, key, target, kind):
     limit_rest_slope = 0.45 if kind == 'shots' else 0.08  # per extra free day, capped context
     limit_rest = 0.8 if kind == 'shots' else 0.16
     limit_slope = 0.75 if kind == 'shots' else 0.12  # per 1000 km
-    limit_travel = 1.5 if kind == 'shots' else 0.25
+    limit_travel = 1.5 if kind == 'shots' else 0.26
 
     b2b_rows = [x['residual'] for x in samples if x['b2b']]
     rested = [x['residual'] for x in samples if not x['b2b']]
@@ -1281,7 +1281,7 @@ def _predict_game_winner_plus(home, away, game_date):
 
 
 def _shadow_analysis(home, away, game_date):
-    """0.25 live comparison plus production H2H payload.
+    """0.26 live comparison plus production H2H payload.
 
     LOCK 5v5+tied is now the primary model only for the ``Více střel`` market.
     If historical play-by-play coverage is insufficient, the payload explicitly
@@ -1340,7 +1340,7 @@ def _shadow_analysis(home, away, game_date):
             'home_goals': pg['home_goals'], 'away_goals': pg['away_goals'],
             'goals_55': goal_probs(pg), 'profile': pg.get('profile') or {},
         },
-        'note': ('Více střel používá v 0.25 LOCK 5v5+tied jako hlavní model, pokud je dost PBP historie; '
+        'note': ('Více střel používá v 0.26 LOCK 5v5+tied jako hlavní model, pokud je dost PBP historie; '
                  'jinak se bezpečně vrátí na Model 1. Pravděpodobnost zůstává raw LOCK, aby se po lockboxu '
                  'dodatečně nepřelaďovala. Góly a ostatní trhy zůstávají na Modelu 1 / shadow režimu.'),
     }
@@ -3624,7 +3624,7 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
         'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'model12': model12, 'deep_mode': deep_mode, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
-        'warning': ('0.25 povyšuje LOCK 5v5+tied do živé Analýzy pouze pro trh Více střel; pokud chybí dostatečná PBP historie, použije se Model 1 fallback. Model 12 lockbox 2021/22 a 95% Wilsonovy intervaly zůstávají validačním základem. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
+        'warning': ('0.26 povyšuje LOCK 5v5+tied do živé Analýzy pouze pro trh Více střel; pokud chybí dostatečná PBP historie, použije se Model 1 fallback. Model 12 lockbox 2021/22 a 95% Wilsonovy intervaly zůstávají validačním základem. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
                     'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. V živé Analýze je produkční pouze LOCK 5v5+tied pro Více střel; gólový LOCK a ostatní kandidáti zůstávají shadow. '
                     'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
@@ -3668,7 +3668,7 @@ def _run_backtest_job(job_id, team, start, games):
     except MemoryError:
         payload = {'status': 'error',
                    'error': 'Serveru došla paměť při backtestu',
-                   'detail': 'Zkus verzi 0.25 znovu; deep režim má výrazně menší paměťové nároky.',
+                   'detail': 'Zkus verzi 0.26 znovu; deep režim má výrazně menší paměťové nároky.',
                    'finished_at': time.time()}
     except Exception as exc:
         payload = {'status': 'error', 'error': 'Backtest se nepodařilo dokončit',
@@ -3710,7 +3710,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.25', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.26', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)

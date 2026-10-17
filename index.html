@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NHL Team Shots Analyzer 0.25</title>
+<title>NHL Team Shots Analyzer 0.26</title>
 <style>
 :root{
   color-scheme:dark;--bg:#07101a;--bg2:#0a1522;--panel:#0d1b2a;--panel2:#101f31;
@@ -36,12 +36,67 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
 
 .lineupSource{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:7px}.sourceBadge{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;background:#0b2637;border:1px solid #24516d;color:#9ee0ff;font-size:9px;font-weight:800}.modelOff{background:#2b171d;border-color:#653344;color:#efb6c0}.lineupTeams{display:grid;grid-template-columns:1fr 1fr;gap:7px}.lineupTeam{background:#08131f;border:1px solid #213e56;border-radius:8px;padding:8px;min-width:0}.lineupTeam h3{font-size:11px;margin:0 0 6px;color:#f4f8fc}.lineTitle{font-size:8px;text-transform:uppercase;letter-spacing:.8px;color:#6ebfe5;margin:7px 0 3px}.lineRow{font-size:9px;line-height:1.35;color:#c8d7e4;padding:2px 0;border-bottom:1px solid #142b3e}.lineRow:last-child{border-bottom:0}.goalieRow{font-size:9px;color:#dff3ff}.injuryRow{font-size:9px;color:#efb7c1;line-height:1.35}.lineupEmpty{font-size:9px;color:#8da2b6}.sourceLink{color:#72d2ff;text-decoration:none}.sourceLink:hover{text-decoration:underline}
 @media(max-width:560px){.lineupTeams{grid-template-columns:1fr}}
+
+/* 0.26 LIGHT UI REFRESH -------------------------------------------------- */
+:root{
+  color-scheme:light;
+  --bg:#f5f7fa;--bg2:#ffffff;--panel:#ffffff;--panel2:#f8fafc;
+  --stroke:#e3e8ef;--stroke2:#cfd8e3;--red:#dc2626;--red2:#ef4444;
+  --ice:#111827;--white:#111827;--muted:#64748b;--green:#16a34a;--bad:#dc2626;--nav:#ffffff;
+}
+html{background:#f4f6f8}
+body{background:#f4f6f8;color:#111827;font-size:14px}
+.app{max-width:1220px;padding:0 14px 42px}
+.topbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);backdrop-filter:blur(10px);border-bottom:1px solid #e5e7eb;padding:12px 4px;box-shadow:0 2px 12px #0f172a0a}
+.brandMark{background:#111827;border:0;color:#fff;box-shadow:none}.brand h1{color:#111827}.brand h1 span{color:#111827}.sub{color:#94a3b8}
+.nav button{background:#fff;color:#475569;border:1px solid #e2e8f0;box-shadow:0 1px 2px #0f172a08}.nav button.active{background:#111827;border-color:#111827;color:#fff;box-shadow:none}
+.selector,.card{background:#fff;border:1px solid #e5e7eb;box-shadow:0 5px 18px #0f172a0b;border-radius:16px}
+.selector{margin:14px 0;padding:14px}.sectionTitle,.cardTitle{color:#111827}.sectionTitle:before,.cardTitle:before{background:#111827}
+label{color:#64748b}.field,select,input{background:#fff;color:#111827;border:1px solid #d8e0e8}.field:focus,select:focus,input:focus{border-color:#94a3b8;box-shadow:0 0 0 3px #cbd5e133}
+.run{background:#111827;color:#fff}.run:hover{background:#0f172a}.status{color:#64748b}
+.matchCard{background:#fff;border-color:#e5e7eb;min-height:205px}.matchMeta{color:#64748b}.logoWrap{background:#fff;border:1px solid #e5e7eb;box-shadow:0 8px 24px #0f172a10}.fallbackLogo{color:#334155}.teamName{color:#111827}.homeAway{color:#64748b}.vs{color:#64748b}
+.modelStrip{border-top:1px solid #eef2f6;background:#fafbfc}.modelStrip b{color:#111827}.modelStrip small{color:#64748b}
+.tableWrap{border-radius:10px}table{color:#334155}th,td{border-bottom:1px solid #edf1f5}th{color:#64748b;background:#fafbfc}.micro{color:#64748b}.note{border-left:3px solid #94a3b8;background:#f8fafc;color:#475569}.warn{background:#fff7f7;border-color:#fecaca;color:#991b1b}
+.marketTabs button{background:#f3f5f7;color:#475569;border:1px solid #e5e7eb}.marketTabs button.active{background:#111827;color:#fff;border-color:#111827}
+.marketResult{background:#f8fafc;border:1px solid #edf1f5;border-radius:14px;padding:14px;margin-top:10px}.prob{color:#111827}.prob.good{color:#16a34a!important}.prob.bad{color:#dc2626!important}.probLabel,.tie{color:#64748b}
+.miniLogo{background:#fff;border-color:#e2e8f0}.bar{background:#e5e7eb}.bar .barGood{background:#22c55e!important}.bar .barNeutral{background:#cbd5e1!important}.bar .barBad{background:#ef4444!important}
+.formRow{gap:10px}.statBox,.metric,.factor,.tipsStat,.btMetric,.btCalBlock,.btLineBlock,.btAblationBlock{background:#fff;border:1px solid #e5e7eb;box-shadow:0 1px 2px #0f172a08}.statBox b{color:#111827}.statBox small,.metric span,.tipsStat span,.btMetric span{color:#64748b}.metric b{color:#111827}
+.evGrid{gap:10px}.good,.btGood,.btCompareGood{color:#16a34a!important}.bad,.btCompareBad{color:#dc2626!important}.btNeutral{color:#64748b}.prodLine{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}.prodLine strong{color:#166534}.secondary{background:#fff;border:1px solid #cbd5e1;color:#334155}.secondary:hover{background:#f8fafc}.dangerNote{background:#fff7f7;border:1px solid #fecaca;color:#991b1b}
+.chart{border-bottom-color:#e2e8f0}.chart div{background:#22c55e}.chart div.away{background:#cbd5e1}.chartTabs button{background:#f8fafc;color:#64748b;border-color:#e2e8f0}.chartTabs button.active{background:#111827;color:#fff;border-color:#111827}
+.lineupSource{color:#475569}.sourceBadge{background:#f8fafc;border-color:#dbe3eb;color:#334155}.modelOff{background:#fff7f7;border-color:#fecaca;color:#991b1b}.lineupTeam{background:#fff;border-color:#e5e7eb}.lineupTeam h3{color:#111827}.lineTitle{color:#64748b}.lineRow{color:#475569;border-bottom-color:#edf1f5}.goalieRow{color:#334155}.injuryRow{color:#b91c1c}.lineupEmpty{color:#64748b}.sourceLink{color:#2563eb}
+.betaTag{background:#fff7ed;border-color:#fed7aa;color:#9a3412}.btWarn{background:#fff7f7;border-color:#fecaca;color:#991b1b}.factorChip{background:#f8fafc;border-color:#e2e8f0;color:#475569}.btMarketName{color:#111827}.btLineBlock h3,.btCalBlock h3,.btAblationBlock h3{color:#111827}
+.footer{color:#94a3b8}
+/* Positive / negative rows are now visually obvious without relying on color alone. */
+.good:before,.btCompareGood:before{content:'↑ ';font-weight:900}.bad:before,.btCompareBad:before{content:'↓ ';font-weight:900}
+/* Mobile: surface the decision first; detailed cards follow. */
+@media(max-width:900px){
+  #results{display:flex;flex-direction:column;gap:10px}
+  #results>.col{display:contents}
+  #results>.col:first-child>article:nth-child(1){order:1}
+  #results>.col:nth-child(2)>article:nth-child(1){order:2}
+  #results>.col:first-child>article:nth-child(3){order:3}
+  #results>.col:first-child>article:nth-child(4){order:4}
+  #results>.col:nth-child(2)>article:nth-child(2){order:5}
+  #results>.col:first-child>article:nth-child(2){order:6}
+  #results>.col:nth-child(2)>article:nth-child(3){order:7}
+  #results>.col:nth-child(2)>article:nth-child(5){order:8}
+  #results>.col:nth-child(2)>article:nth-child(4){order:9}
+}
+@media(max-width:560px){
+  body{font-size:13px}.app{padding:0 9px 28px}.topbar{position:static}.brandMark{width:32px;height:32px}.brand h1{font-size:17px}
+  .nav{grid-template-columns:repeat(3,1fr)}.nav button{padding:9px 6px;min-width:0}
+  .selector,.card{border-radius:14px;padding:11px}.selectorGrid{grid-template-columns:1fr 1fr}.matchInner{padding:13px 8px}.modelStrip{padding:10px 8px}
+  .marketTabs{display:flex;overflow:auto;padding-bottom:2px;scrollbar-width:none}.marketTabs::-webkit-scrollbar{display:none}.marketTabs button{min-width:112px;padding:9px 7px}
+  .probRow{grid-template-columns:1fr 64px 1fr}.prob{font-size:28px}.marketResult{padding:12px}
+  .evGrid{grid-template-columns:repeat(3,1fr)}.metric{padding:8px 4px}.metric b{font-size:15px}
+}
+
 </style>
 </head>
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.25</div></div></div>
+    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.26</div></div></div>
     <nav class="nav"><button id="navAnalysis" class="active">▥ Analýza</button><button id="navBacktest">⌁ Backtest</button><button id="navTips">↻ Moje tipy</button></nav>
   </header>
 
@@ -101,7 +156,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
         </article>
 
         <article class="card">
-          <div class="cardTitle">Produkční model 0.25 · Více střel</div>
+          <div class="cardTitle">Produkční model 0.26 · Více střel</div>
           <div id="shadowInfo" class="note">Pro trh Více střel se po spuštění načte ověřený LOCK 5v5+tied. Pokud není dost historických play-by-play dat, aplikace automaticky použije Model 1. Gólový LOCK zůstává pouze shadow.</div>
         </article>
 
@@ -148,7 +203,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
   <main id="backtestPage" hidden>
     <section class="selector">
       <div class="sectionTitle">Historický backtest <span class="betaTag">BETA</span></div>
-      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.25 povyšuje <strong>LOCK 5v5+tied</strong> do živé Analýzy pouze pro trh Více střel. Model prošel jednorázovým lockboxem 2021/22 a při nedostatečné PBP historii se bezpečně vrátí na Model 1. Pravděpodobnost se po lockboxu dodatečně nepřelaďuje; confidence pásma slouží jako ověřený kontext s 95% intervalem spolehlivosti.</div>
+      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.26 povyšuje <strong>LOCK 5v5+tied</strong> do živé Analýzy pouze pro trh Více střel. Model prošel jednorázovým lockboxem 2021/22 a při nedostatečné PBP historii se bezpečně vrátí na Model 1. Pravděpodobnost se po lockboxu dodatečně nepřelaďuje; confidence pásma slouží jako ověřený kontext s 95% intervalem spolehlivosti.</div>
       <div class="backtestControls">
         <div><label>Rozsah / tým</label><select id="btTeam"></select></div>
         <div><label>Sezóna</label><select id="btSeason"><option value="20212022" selected>2021/22 · LOCKBOX (nezávislý test)</option><option value="MULTI4">2022/23 + 2023/24 + 2024/25 + 2025/26</option><option value="MULTI3">2023/24 + 2024/25 + 2025/26</option><option value="MULTI2">2024/25 + 2025/26</option><option value="20252026">2025/26</option><option value="20242025">2024/25</option><option value="20232024">2023/24</option><option value="20222023">2022/23</option><option value="20262027">2026/27</option></select></div>
@@ -188,7 +243,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
     </section>
   </main>
 
-  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Verze 0.25 používá LOCK 5v5+tied jako hlavní model pouze pro Více střel; ostatní trhy zůstávají na Modelu 1 a gólový kandidát je shadow. Při chybějící PBP historii se Více střel vrátí na Model 1. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
+  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Verze 0.26 používá LOCK 5v5+tied jako hlavní model pouze pro Více střel; ostatní trhy zůstávají na Modelu 1 a gólový kandidát je shadow. Při chybějící PBP historii se Více střel vrátí na Model 1. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
 </div>
 <script>
 const teams={ANA:'Anaheim Ducks',BOS:'Boston Bruins',BUF:'Buffalo Sabres',CGY:'Calgary Flames',CAR:'Carolina Hurricanes',CHI:'Chicago Blackhawks',COL:'Colorado Avalanche',CBJ:'Columbus Blue Jackets',DAL:'Dallas Stars',DET:'Detroit Red Wings',EDM:'Edmonton Oilers',FLA:'Florida Panthers',LAK:'Los Angeles Kings',MIN:'Minnesota Wild',MTL:'Montreal Canadiens',NSH:'Nashville Predators',NJD:'New Jersey Devils',NYI:'New York Islanders',NYR:'New York Rangers',OTT:'Ottawa Senators',PHI:'Philadelphia Flyers',PIT:'Pittsburgh Penguins',SEA:'Seattle Kraken',SJS:'San Jose Sharks',STL:'St. Louis Blues',TBL:'Tampa Bay Lightning',TOR:'Toronto Maple Leafs',UTA:'Utah Mammoth',VAN:'Vancouver Canucks',VGK:'Vegas Golden Knights',WSH:'Washington Capitals',WPG:'Winnipeg Jets'};
@@ -243,18 +298,18 @@ function render(){
       [pa,pt,pb]=h2h(sa,sb);
       prod='<div class="prodLine"><strong>Model 1 fallback</strong> · LOCK se použije jen při dostatečné historické PBP coverage.</div>';
     }
-    html=`<div class="probRow"><div class="probSide"><div class="miniLogo">${logoHTML(state.A,currentLogo(state.A))}</div><div><div class="probLabel">${safe(A)}</div><div class="prob">${pct(pa)}</div></div></div><div class="tie">Shodný počet<br><b>${pct(pt)}</b></div><div class="probSide right"><div><div class="probLabel">${safe(B)}</div><div class="prob">${pct(pb)}</div></div><div class="miniLogo">${logoHTML(state.B,currentLogo(state.B))}</div></div></div><div class="bar"><div style="width:${pa*100}%"></div><div style="width:${pt*100}%"></div><div style="width:${pb*100}%"></div></div>${prod}`;
+    html=`<div class="probRow"><div class="probSide"><div class="miniLogo">${logoHTML(state.A,currentLogo(state.A))}</div><div><div class="probLabel">${safe(A)}</div><div class="prob ${pa>=pb?'good':'bad'}">${pct(pa)}</div></div></div><div class="tie">Shodný počet<br><b>${pct(pt)}</b></div><div class="probSide right"><div><div class="probLabel">${safe(B)}</div><div class="prob ${pb>pa?'good':'bad'}">${pct(pb)}</div></div><div class="miniLogo">${logoHTML(state.B,currentLogo(state.B))}</div></div></div><div class="bar"><div class="${pa>=pb?'barGood':'barBad'}" style="width:${pa*100}%"></div><div class="barNeutral" style="width:${pt*100}%"></div><div class="${pb>pa?'barGood':'barBad'}" style="width:${pb*100}%"></div></div>${prod}`;
     opts=[option(A+' více střel',pa),option(B+' více střel',pb)];
     expl=`Třícestný trh: při shodném počtu střel oba týmové výběry prohrávají. Zdroj pravděpodobnosti: ${source}.`;
   }
   else if(['team','total','goals'].includes(market)){
     const defaults={team:27.5,total:56.5,goals:5.5};
     $('controls').innerHTML=`<div class="inlineControls"><div><label>Hranice</label><input id="line" type="number" step="0.5" min="0.5" value="${defaults[market]}"></div>${market==='team'?`<div><label>Tým</label><select id="which"><option value="A">${safe(A)}</option><option value="B">${safe(B)}</option></select></div>`:''}</div>`;
-    const compute=()=>{const line=Number($('line').value),which=$('which')?.value||'A';if(!Number.isFinite(line))return;let d,who;if(market==='team'){d=which==='A'?sa:sb;who=which==='A'?A:B}else if(market==='total'){d=pois(adjusted('ea','adjShotsA')+adjusted('eb','adjShotsB'));who='Celkové střely'}else{d=pois(adjusted('egA','adjGoalsA')+adjusted('egB','adjGoalsB'),55);who='Celkové góly'}const ov=over(d,line),push=Number.isInteger(line)?d[line]||0:0,un=Math.max(0,1-ov-push);$('marketResult').innerHTML=`<div class="probRow"><div><div class="probLabel">Více než ${line}</div><div class="prob">${pct(ov)}</div></div><div class="tie">${safe(who)}${push?`<br>Na hranici ${pct(push)}`:''}</div><div style="text-align:right"><div class="probLabel">Méně než ${line}</div><div class="prob">${pct(un)}</div></div></div>`;$('explanation').textContent=market==='goals'?'Zjednodušený Poissonův Model 1 pro góly; LOCK góly zatím zůstává shadow.':'Tento trh zatím používá Model 1.';hitInfo(market,line,which);selectOptions([option(who+' více než '+line,ov,push),option(who+' méně než '+line,un,push)])};
+    const compute=()=>{const line=Number($('line').value),which=$('which')?.value||'A';if(!Number.isFinite(line))return;let d,who;if(market==='team'){d=which==='A'?sa:sb;who=which==='A'?A:B}else if(market==='total'){d=pois(adjusted('ea','adjShotsA')+adjusted('eb','adjShotsB'));who='Celkové střely'}else{d=pois(adjusted('egA','adjGoalsA')+adjusted('egB','adjGoalsB'),55);who='Celkové góly'}const ov=over(d,line),push=Number.isInteger(line)?d[line]||0:0,un=Math.max(0,1-ov-push);$('marketResult').innerHTML=`<div class="probRow"><div><div class="probLabel">Více než ${line}</div><div class="prob ${ov>=un?'good':'bad'}">${pct(ov)}</div></div><div class="tie">${safe(who)}${push?`<br>Na hranici ${pct(push)}`:''}</div><div style="text-align:right"><div class="probLabel">Méně než ${line}</div><div class="prob ${un>ov?'good':'bad'}">${pct(un)}</div></div></div>`;$('explanation').textContent=market==='goals'?'Zjednodušený Poissonův Model 1 pro góly; LOCK góly zatím zůstává shadow.':'Tento trh zatím používá Model 1.';hitInfo(market,line,which);selectOptions([option(who+' více než '+line,ov,push),option(who+' méně než '+line,un,push)])};
     $('line').oninput=compute;if($('which'))$('which').onchange=compute;compute();return;
   }
   else{
-    const [pa,pt,pb]=h2h(ga,gb);html=`<div class="probRow"><div><div class="probLabel">${safe(A)} po 60 min</div><div class="prob">${pct(pa)}</div></div><div class="tie">Remíza<br><b>${pct(pt)}</b></div><div style="text-align:right"><div class="probLabel">${safe(B)} po 60 min</div><div class="prob">${pct(pb)}</div></div></div>`;opts=[option(A+' po 60 min',pa),option('Remíza po 60 min',pt),option(B+' po 60 min',pb),option('Dvojtip 1X',pa+pt),option('Dvojtip X2',pb+pt),option('Dvojtip 12',pa+pb)];expl='Výsledek po 60 minutách; prodloužení ani nájezdy nejsou součástí 1/X/2. Tento trh zatím používá Model 1.';
+    const [pa,pt,pb]=h2h(ga,gb);html=`<div class="probRow"><div><div class="probLabel">${safe(A)} po 60 min</div><div class="prob ${pa>=pb&&pa>=pt?'good':'bad'}">${pct(pa)}</div></div><div class="tie">Remíza<br><b class="${pt>=pa&&pt>=pb?'good':'bad'}">${pct(pt)}</b></div><div style="text-align:right"><div class="probLabel">${safe(B)} po 60 min</div><div class="prob ${pb>=pa&&pb>=pt?'good':'bad'}">${pct(pb)}</div></div></div>`;opts=[option(A+' po 60 min',pa),option('Remíza po 60 min',pt),option(B+' po 60 min',pb),option('Dvojtip 1X',pa+pt),option('Dvojtip X2',pb+pt),option('Dvojtip 12',pa+pb)];expl='Výsledek po 60 minutách; prodloužení ani nájezdy nejsou součástí 1/X/2. Tento trh zatím používá Model 1.';
   }
   $('marketResult').innerHTML=html;$('explanation').textContent=expl;selectOptions(opts);
 }

@@ -1,31 +1,20 @@
-# NHL Team Shots Analyzer 0.25
+# NHL Team Shots Analyzer 0.26
 
-Verze 0.25 povyšuje `LOCK 5v5+tied` z experimentu do **živé Analýzy pro trh Více střel**. Je to první model v aplikaci, který prošel opakovaným walk-forward testem i odděleným lockboxem 2021/22.
+Verze 0.26 je zaměřená na **přehlednost a jednoduchý světlý vzhled**, bez změny ověřené produkční logiky trhu Více střel.
 
-## Produkční Více střel
-- hlavní zdroj je `LOCK 5v5+tied`, postavený na 5v5 a score-tied shot-attempt share z NHL play-by-play;
-- používá pevnou 30zápasovou předzápasovou historii stejně jako ve validaci;
-- pokud není alespoň 70 % potřebné PBP historie, aplikace automaticky použije **Model 1 fallback**;
-- ruční scénář střel se může počítat nad LOCK očekáváním, ale je výslovně označen jako mimo historickou validaci.
+## Nový vzhled
+- bílý podklad a světlé karty;
+- výrazně méně vizuálního šumu;
+- tmavé neutrální ovládací prvky místo barev, které by mohly působit jako hodnocení;
+- zelená = lepší / pozitivní výsledek, červená = horší / negativní výsledek;
+- u barev je současně šipka nahoru/dolů, takže význam není závislý jen na barvě;
+- NHL loga zůstávají přímo u týmů a pravděpodobností;
+- na mobilu se důležité části řadí dříve: zápas → souhrn → trh → kurz/EV → produkční model; detailní data následují až potom.
 
-## Ověřená síla signálu
-Živá Analýza u Více střel ukazuje, do kterého confidence pásma aktivní LOCK predikce spadá. Jako kontext se zobrazí skutečná úspěšnost, počet případů a 95% Wilsonův interval z nezávislého lockboxu 2021/22:
+## Analýza
+Produkční `LOCK 5v5+tied` pro trh **Více střel** zůstává beze změny. Vzájemné pravděpodobnosti se nyní vizuálně porovnají: vyšší hodnota je zelená, nižší červená a remíza zůstává neutrální.
 
-- 60 %+ confidence: 71,6 % na 599 případech;
-- 65 %+: 75,6 % na 386;
-- 70 %+: 78,3 % na 212;
-- 75 %+: 78,6 % na 98;
-- 80 %+: 80,5 % na 41 případech.
+Stejná logika přehlednosti se používá i u over/under a 1/X/2 zobrazení. Barvy neznamenají sázkové doporučení; pouze rychle ukazují, která modelová pravděpodobnost je vyšší nebo zda se metrika zlepšila/zhoršila.
 
-Vyšší pásma mají menší vzorek, proto jsou v aplikaci označena opatrně.
-
-## Pravděpodobnost a EV
-Samotná produkční pravděpodobnost zůstává **raw LOCK pravděpodobností**. Po lockboxu ji dodatečně nepřemapováváme podle stejné sezóny, protože taková post-hoc kalibrace by potřebovala nový nezávislý test. Ověřená confidence pásma proto slouží jako transparentní kalibrační kontext, ne jako skryté přelaďování modelu.
-
-Férový kurz a modelové EV pro trh Více střel nyní používají produkční LOCK pravděpodobnost, pokud je LOCK dostupný. Historické bookmakerové kurzy ale v backtestu stále nejsou, takže výsledky neprokazují historické ROI ani ziskovost.
-
-## Ostatní trhy
-Týmové střely, celkové střely, góly a 1/X/2 zůstávají v živé Analýze na Modelu 1. Gólový locked profil se dál zobrazuje pouze jako shadow, protože lockbox zatím nesplnil podmínku pro povýšení.
-
-## Validace
-Model 12 Lockbox 2021/22 zůstává v Backtestu jako auditní kontrola. V posledním běhu bylo vyhodnoceno 1302 zápasů; `LOCK 5v5+tied` zlepšil Brier přibližně z 0,226 na 0,225 a měl kladný výsledek v 7 z 8 chronologických bloků.
+## Backtest
+Výpočty, Model 12 Lockbox, confidence pásma i deep režim jsou stejné jako v 0.25. Tabulky jsou pouze převedené do světlého vzhledu a pozitivní/negativní změny jsou výraznější.
