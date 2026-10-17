@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NHL Team Shots Analyzer 0.23</title>
+<title>NHL Team Shots Analyzer 0.24</title>
 <style>
 :root{
   color-scheme:dark;--bg:#07101a;--bg2:#0a1522;--panel:#0d1b2a;--panel2:#101f31;
@@ -41,7 +41,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.23</div></div></div>
+    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.24</div></div></div>
     <nav class="nav"><button id="navAnalysis" class="active">▥ Analýza</button><button id="navBacktest">⌁ Backtest</button><button id="navTips">↻ Moje tipy</button></nav>
   </header>
 
@@ -101,7 +101,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
         </article>
 
         <article class="card">
-          <div class="cardTitle">Experimentální model 0.23 · shadow</div>
+          <div class="cardTitle">Experimentální model 0.24 · shadow</div>
           <div id="shadowInfo" class="note">Po spuštění analýzy porovnám Model 1 se zamknutým 5v5+tied modelem pro více střel a zamknutým gólovým profilem. Shadow model nic nemění v hlavním výpočtu ani EV.</div>
         </article>
 
@@ -148,18 +148,19 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
   <main id="backtestPage" hidden>
     <section class="selector">
       <div class="sectionTitle">Historický backtest <span class="betaTag">BETA</span></div>
-      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.23 opravuje dlouhý <strong>4sezonní / 2000zápasový</strong> běh: drží v paměti jen kompaktní historická data, opakuje dočasně neúspěšné NHL API požadavky a ukazuje skutečný průběh. <strong>Model 11 Confidence</strong> dál měří předem daná pásma 60/65/70/75/80 % pouze na chronologické forward části. V živé Analýze zůstává Model 1 a kandidáti se zobrazují pouze jako shadow porovnání.</div>
+      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.24 přidává <strong>Model 12 Lockbox</strong>: sezóna 2021/22 je jednorázový nezávislý test už zamknutého 5v5+tied modelu. Na lockboxu se nic nepřelaďuje. Confidence pásma navíc ukazují <strong>95% interval spolehlivosti</strong>. V živé Analýze zůstává Model 1 a kandidáti jsou dál pouze shadow porovnání.</div>
       <div class="backtestControls">
         <div><label>Rozsah / tým</label><select id="btTeam"></select></div>
-        <div><label>Sezóna</label><select id="btSeason"><option value="MULTI4" selected>2022/23 + 2023/24 + 2024/25 + 2025/26</option><option value="MULTI3">2023/24 + 2024/25 + 2025/26</option><option value="MULTI2">2024/25 + 2025/26</option><option value="20252026">2025/26</option><option value="20242025">2024/25</option><option value="20232024">2023/24</option><option value="20222023">2022/23</option><option value="20262027">2026/27</option></select></div>
-        <div><label>Počet zápasů</label><select id="btGames"><option value="100">100</option><option value="300">300</option><option value="600">600</option><option value="800">800</option><option value="1000">1000</option><option value="1500">1500</option><option value="2000" selected>2000</option></select></div>
+        <div><label>Sezóna</label><select id="btSeason"><option value="20212022" selected>2021/22 · LOCKBOX (nezávislý test)</option><option value="MULTI4">2022/23 + 2023/24 + 2024/25 + 2025/26</option><option value="MULTI3">2023/24 + 2024/25 + 2025/26</option><option value="MULTI2">2024/25 + 2025/26</option><option value="20252026">2025/26</option><option value="20242025">2024/25</option><option value="20232024">2023/24</option><option value="20222023">2022/23</option><option value="20262027">2026/27</option></select></div>
+        <div><label>Počet zápasů</label><select id="btGames"><option value="100">100</option><option value="300">300</option><option value="600">600</option><option value="800">800</option><option value="1000">1000</option><option value="1200">1200</option><option value="1400" selected>1400</option><option value="1500">1500</option><option value="2000">2000</option></select></div>
         <button id="runBacktest" class="run">Spustit backtest</button>
       </div>
-      <div id="btStatus" class="status">Doporučený tvrdý test: „Celá NHL“ + 4 sezóny + 2000 zápasů. U 800+ zápasů se automaticky zapne <strong>deep režim</strong>: počítá Model 1 + zamknuté kandidáty potřebné pro Model 10/11 a přeskočí staré vývojové modely 4–9. Díky tomu má test výrazně menší nároky a průběh se zobrazuje procenty.</div>
+      <div id="btStatus" class="status">Doporučený test 0.24: <strong>Celá NHL + 2021/22 LOCKBOX + 1400 zápasů</strong>. Server vezme všechny dostupné zápasy sezóny (některé může přeskočit kvůli nedostatku předzápasové historie). Model 12 nic netrénuje ani nepřelaďuje — jen ověří už zamknutý model na starší, dosud nepoužité sezoně.</div>
     </section>
     <section id="btResults" hidden class="dashboard" style="grid-template-columns:1fr">
       <article class="card"><div class="cardTitle">Souhrn validace</div><div id="btSummary" class="btSummary"></div><div id="btModel" class="note"></div><div id="btFactors" class="factorChips"></div></article>
       <article class="card"><div class="cardTitle">Ablace faktorů: co opravdu pomáhá</div><div id="btAblation" class="btAblation"></div><div class="micro" style="margin-top:8px">Každý řádek mění proti Modelu 1 jen uvedený faktor. Kladný Brier zisk znamená lepší pravděpodobnosti. Zeleně je nejlepší varianta daného trhu.</div></article>
+      <article class="card"><div class="cardTitle">Model 12 Lockbox · 2021/22 nezávislý test</div><div id="btM12Meta" class="factorChips"></div><div class="tableWrap" id="btM12Compare" style="margin-top:9px"></div><div id="btM12Confidence" class="tableWrap" style="margin-top:9px"></div><div class="micro" style="margin-top:8px">2021/22 se používá jednorázově až po zamknutí modelu. Na těchto výsledcích se nic nevybírá ani nepřelaďuje. „PROŠEL“ vyžaduje kladný Brier zisk alespoň 0,001 po zaokrouhlení (interně 0,0005), zlepšení nejméně v 60 % časových bloků a žádný extrémně špatný blok.</div></article>
       <article class="card"><div class="cardTitle">Model 11 Confidence · silné predikce</div><div id="btM11Meta" class="factorChips"></div><div id="btM11Confidence" class="btAblation" style="margin-top:9px"></div><div class="micro" style="margin-top:8px">Pásma 60/65/70/75/80 % jsou pevně daná předem. Vždy sleduj N a pokrytí: vysoké procento na pár případech není důkaz. „Nejhorší sezóna“ se ukáže jen pro sezóny s alespoň 20 případy v daném pásmu.</div></article>
       <article class="card"><div class="cardTitle">Model 10 Locked · pevní kandidáti</div><div id="btM10Meta" class="factorChips"></div><div class="tableWrap" id="btM10Compare" style="margin-top:9px"></div><div class="micro" style="margin-top:8px">Více střel a góly používají předem zamknutý profil z předchozí stabilní validace. U 1200+ zápasů se forward test rozšíří na 8 časových bloků a začne dříve, aby pokryl více sezon.</div></article>
       <article class="card"><div class="cardTitle">Model 9 Event Data · play-by-play specialisté</div><div id="btM9Meta" class="factorChips"></div><div class="tableWrap" id="btM9Compare" style="margin-top:9px"></div><div class="micro" style="margin-top:8px">Nové modely používají pouze historické události dostupné před zápasem. Slot je jednoduchý geometrický proxy, nikoli oficiální xG.</div></article>
@@ -187,7 +188,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
     </section>
   </main>
 
-  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Živá Analýza stále počítá Model 1; locked kandidáti jsou jen shadow porovnání a nemění EV. Verze 0.23 opravuje 1500–2000zápasový běh pomocí deep režimu, kompaktní cache, retry NHL API a živého průběhu; confidence pásma 60–80 % zůstávají stejná. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
+  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Živá Analýza stále počítá Model 1; locked kandidáti jsou jen shadow porovnání a nemění EV. Verze 0.24 přidává nezávislý lockbox 2021/22 a 95% Wilsonovy intervaly k confidence pásmům; deep režim a kompaktní cache zůstávají pro dlouhé testy. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
 </div>
 <script>
 const teams={ANA:'Anaheim Ducks',BOS:'Boston Bruins',BUF:'Buffalo Sabres',CGY:'Calgary Flames',CAR:'Carolina Hurricanes',CHI:'Chicago Blackhawks',COL:'Colorado Avalanche',CBJ:'Columbus Blue Jackets',DAL:'Dallas Stars',DET:'Detroit Red Wings',EDM:'Edmonton Oilers',FLA:'Florida Panthers',LAK:'Los Angeles Kings',MIN:'Minnesota Wild',MTL:'Montreal Canadiens',NSH:'Nashville Predators',NJD:'New Jersey Devils',NYI:'New York Islanders',NYR:'New York Rangers',OTT:'Ottawa Senators',PHI:'Philadelphia Flyers',PIT:'Pittsburgh Penguins',SEA:'Seattle Kraken',SJS:'San Jose Sharks',STL:'St. Louis Blues',TBL:'Tampa Bay Lightning',TOR:'Toronto Maple Leafs',UTA:'Utah Mammoth',VAN:'Vancouver Canucks',VGK:'Vegas Golden Knights',WSH:'Washington Capitals',WPG:'Winnipeg Jets'};
@@ -258,12 +259,13 @@ $('exportTips').onclick=()=>{const blob=new Blob([JSON.stringify(tips,null,2)],{
 $('copyTip').onclick=()=>{if(!state||!options.length)return;const home=state.home==='A'?state.A:state.B,away=state.home==='A'?state.B:state.A;$('tipHome').value=home;$('tipAway').value=away;if(state.fixture?.gameDate)$('tipDate').value=state.fixture.gameDate;$('tipMarket').value=market;tipChoices();const label=options[Number($('selection').value)||0]?.label||'';if(market==='h2h')$('tipPick').value=label.startsWith(teams[home])?'home':'away';else if(market==='winner')$('tipPick').value=label.includes('1X')?'1X':label.includes('X2')?'X2':label.includes('12')?'12':label.startsWith('Remíza')?'draw':label.startsWith(teams[home])?'home':'away';else{if($('line'))$('tipLine').value=$('line').value;const overPick=label.includes('více než');if(market==='team')$('tipPick').value=(label.startsWith(teams[home])?'home':'away')+(overPick?'Over':'Under');else $('tipPick').value=overPick?'over':'under'}$('tipOdds').value=$('odds').value;showPage('tips');$('tipMsg').textContent='Výběr předvyplněn včetně NHL data zápasu. Zkontroluj vklad.';};
 function btPct(v){return v==null?'—':(100*v).toFixed(1).replace('.',',')+' %'}
 function btBrier(v){return v==null?'—':Number(v).toFixed(3).replace('.',',')}
+function btCI(lo,hi){return lo==null||hi==null?'—':btPct(lo)+' – '+btPct(hi)}
 function renderBacktest(d){
   $('btResults').hidden=false;
   const scope=d.scope==='league'?'Celá NHL':teams[d.team]||d.team,v1=d.models?.v1,full=d.models?.full;
   $('btSummary').innerHTML=`<div class="btMetric"><span>Vyhodnocené zápasy</span><b>${d.evaluated_games}</b></div><div class="btMetric"><span>Rozsah</span><b>${safe(scope)}</b></div><div class="btMetric"><span>Sezóna</span><b>${safe(d.season_label||String(d.season))}</b></div><div class="btMetric"><span>Doba výpočtu</span><b>${safe(d.elapsed_seconds)} s</b></div>`;
   const seasonCounts=Object.entries(d.evaluated_by_season||{}).map(([k,v])=>`${k}: ${v}`).join(' · ');
-  $('btModel').innerHTML=`<strong>Model 1:</strong> ${safe(v1?.description||'—')}<br><strong>0.23:</strong> Model 10 drží fixní kandidáty a Model 11 měří confidence pásma pouze na forward části. ${d.deep_mode?'<strong>Deep režim:</strong> staré vývojové Modely 4–9 byly u velkého testu přeskočeny, aby 1500–2000 zápasů spolehlivě doběhlo. ':''}Zápasy jsou v každé sezoně rozložené napříč celým ročníkem. Přeskočeno: ${d.skipped_games}.${seasonCounts?'<br><strong>Vyhodnoceno podle sezon:</strong> '+safe(seasonCounts):''}`;
+  $('btModel').innerHTML=`<strong>Model 1:</strong> ${safe(v1?.description||'—')}<br><strong>0.24:</strong> Model 12 dělá jednorázový lockbox 2021/22; Model 11 nově ukazuje i 95% intervaly spolehlivosti. ${d.deep_mode?'<strong>Deep režim:</strong> staré vývojové Modely 4–9 byly u velkého testu přeskočeny, aby dlouhý běh spolehlivě doběhl. ':''}Zápasy jsou rozložené napříč celým ročníkem. Přeskočeno: ${d.skipped_games}.${seasonCounts?'<br><strong>Vyhodnoceno podle sezon:</strong> '+safe(seasonCounts):''}`;
   const fs=d.factor_summary||{},chip=(label,value)=>`<span class="factorChip">${safe(label)}: <strong>${safe(value)}</strong></span>`;
   $('btFactors').innerHTML=[chip('B2B tým-zápasy',fs.b2b_team_games??'—'),chip('Prům. cestování',fs.avg_travel_km==null?'—':Math.round(fs.avg_travel_km)+' km'),chip('Prům. |kontext střel doma|',fs.home_context_shots?.mean_abs==null?'—':Number(fs.home_context_shots.mean_abs).toFixed(2)),chip('Prům. |kontext střel venku|',fs.away_context_shots?.mean_abs==null?'—':Number(fs.away_context_shots.mean_abs).toFixed(2))].join('');
   const order=['h2h','team','total','goals','winner'],cmp=d.comparison||{};
@@ -272,11 +274,24 @@ function renderBacktest(d){
   const abl=d.ablation||{};
   $('btAblation').innerHTML=order.map(k=>{const block=abl[k]||{},rows=block.rows||[];return `<div class="btAblationBlock"><h3>${safe(block.label||k)}</h3>${rows.length?'<table><thead><tr><th>Varianta</th><th>Úsp.</th><th>Brier</th><th>Zisk</th></tr></thead><tbody>'+rows.map(x=>`<tr class="${x.key===block.best_model?'bestRow':''}"><td>${safe(x.label)}</td><td>${btPct(x.accuracy)}</td><td>${btBrier(x.brier)}</td><td class="${(x.brier_gain??0)>0?'btCompareGood':(x.brier_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.brier_gain)}</td></tr>`).join('')+'</tbody></table>':'<div class="micro">Bez dat.</div>'}<div class="micro" style="margin-top:5px">Nejlepší: <strong>${safe(block.best_label||'—')}</strong></div></div>`}).join('');
 
+  const m12=d.model12||{};
+  if(m12.available){
+    const mm=m12.markets||{},keys=['h2h','goals'];
+    $('btM12Meta').innerHTML=[chip('LOCKBOX',m12.season||'2021/22'),chip('Zápasy',m12.lockbox_games),chip('Období',`${m12.from} → ${m12.to}`),chip('Časové bloky',m12.block_count),chip('Nutné kladné bloky',`${m12.required_positive_blocks}/${m12.block_count}`),chip('Verdikt',m12.verdict)].join('');
+    $('btM12Compare').innerHTML='<table><thead><tr><th>Trh</th><th>N</th><th>M1 úsp.</th><th>Kandidát úsp.</th><th>95% interval</th><th>Brier M1</th><th>Brier kandidát</th><th>Brier zisk</th><th>+ bloky</th><th>Nejhorší blok</th><th>Stav</th></tr></thead><tbody>'+keys.map(k=>{const x=mm[k]||{},ok=x.eligible?'PROŠEL':'NEPROŠEL';return `<tr class="${x.eligible?'bestRow':''}"><td class="btMarketName">${safe(x.label||k)}</td><td>${x.n??0}</td><td>${btPct(x.accuracy_v1)}</td><td>${btPct(x.accuracy_candidate)}</td><td>${btCI(x.candidate_ci95_low,x.candidate_ci95_high)}</td><td>${btBrier(x.brier_v1)}</td><td>${btBrier(x.brier_candidate)}</td><td class="${(x.brier_gain??0)>0?'btCompareGood':(x.brier_gain??0)<0?'btCompareBad':'btNeutral'}">${signedB(x.brier_gain)}</td><td>${x.positive_blocks??0}/${x.blocks??0}</td><td class="${(x.worst_block_gain??0)>=0?'btCompareGood':'btCompareBad'}">${signedB(x.worst_block_gain)}</td><td class="${x.eligible?'btCompareGood':'btCompareBad'}">${ok}</td></tr>`}).join('')+'</tbody></table>';
+    const c=m12.h2h_confidence||[];
+    $('btM12Confidence').innerHTML='<div class="micro" style="margin-bottom:6px"><strong>Více střel · confidence na stejných lockbox zápasech</strong> — M1 je porovnán na přesně stejném výběru zápasů jako kandidát.</div>'+(c.length?'<table><thead><tr><th>Jistota</th><th>N</th><th>Pokrytí</th><th>Prům. jistota</th><th>Kandidát úsp.</th><th>95% interval</th><th>M1 stejné zápasy</th><th>Δ</th><th>Brier</th><th>Vzorek</th></tr></thead><tbody>'+c.map(x=>{const sample=x.sample_status||'—',cls=sample==='OK VZOREK'?'btCompareGood':sample==='VELMI MALÝ'?'btCompareBad':'btNeutral';return `<tr><td>≥ ${Math.round((x.threshold||0)*100)} %</td><td>${x.n??0}</td><td>${btPct(x.coverage)}</td><td>${btPct(x.avg_probability)}</td><td class="${(x.accuracy??0)>=.60?'btCompareGood':''}">${btPct(x.accuracy)}</td><td>${btCI(x.ci95_low,x.ci95_high)}</td><td>${btPct(x.m1_same_accuracy)}</td><td class="${(x.accuracy_delta_vs_m1??0)>0?'btCompareGood':(x.accuracy_delta_vs_m1??0)<0?'btCompareBad':'btNeutral'}">${signed(x.accuracy_delta_vs_m1)}</td><td>${btBrier(x.brier)}</td><td class="${cls}">${safe(sample)}</td></tr>`}).join('')+'</tbody></table>':'<div class="micro">Bez dat.</div>')+`<div class="micro" style="margin-top:6px">${safe(m12.note||'')}</div>`;
+  }else{
+    $('btM12Meta').innerHTML=chip('Model 12',m12.reason||'Spusť 2021/22 LOCKBOX');
+    $('btM12Compare').innerHTML='<div class="micro">Tento panel se vyplní pouze z historických zápasů sezóny 2021/22.</div>';
+    $('btM12Confidence').innerHTML='';
+  }
+
   const m11=d.model11||{};
   if(m11.available){
     const mm11=m11.markets||{};
     $('btM11Meta').innerHTML=[chip('Forward zápasy',m11.forward_games),chip('Warm-up',m11.warmup_n+' zápasů'),chip('Forward období',`${m11.test_from} → ${m11.test_to}`),chip('Sezóny ve forward části',(m11.season_labels||[]).join(' + ')||'—'),chip('Pásma','60 / 65 / 70 / 75 / 80 %')].join('');
-    $('btM11Confidence').innerHTML=order.map(k=>{const b=mm11[k]||{},ca=b.candidate||[],m1=b.v1||[];return `<div class="btAblationBlock"><h3>${safe(b.label||k)} · ${safe(b.candidate_label||'kandidát')}</h3>${ca.length?'<table><thead><tr><th>Jistota</th><th>Kandidát N</th><th>Pokrytí</th><th>Prům. jistota</th><th>Kandidát úsp.</th><th>Brier</th><th>Nejhorší sez.</th><th>M1 N</th><th>M1 úsp.</th><th>Vzorek</th></tr></thead><tbody>'+ca.map((x,i)=>{const y=m1[i]||{},sample=x.sample_status||'—',cls=sample==='OK VZOREK'?'btCompareGood':sample==='VELMI MALÝ'?'btCompareBad':'btNeutral';return `<tr><td>≥ ${Math.round((x.threshold||0)*100)} %</td><td>${x.n??0}</td><td>${btPct(x.coverage)}</td><td>${btPct(x.avg_probability)}</td><td class="${(x.accuracy??0)>=.60?'btCompareGood':''}">${btPct(x.accuracy)}</td><td>${btBrier(x.brier)}</td><td>${x.season_min_accuracy==null?'—':btPct(x.season_min_accuracy)+' ('+(x.seasons_with_sample??0)+' sez.)'}</td><td>${y.n??0}</td><td>${btPct(y.accuracy)}</td><td class="${cls}">${safe(sample)}</td></tr>`}).join('')+'</tbody></table>':'<div class="micro">Bez dat.</div>'}</div>`}).join('');
+    $('btM11Confidence').innerHTML=order.map(k=>{const b=mm11[k]||{},ca=b.candidate||[],m1=b.v1||[];return `<div class="btAblationBlock"><h3>${safe(b.label||k)} · ${safe(b.candidate_label||'kandidát')}</h3>${ca.length?'<table><thead><tr><th>Jistota</th><th>Kandidát N</th><th>Pokrytí</th><th>Prům. jistota</th><th>Kandidát úsp.</th><th>95% interval</th><th>Brier</th><th>Nejhorší sez.</th><th>M1 N</th><th>M1 úsp.</th><th>Vzorek</th></tr></thead><tbody>'+ca.map((x,i)=>{const y=m1[i]||{},sample=x.sample_status||'—',cls=sample==='OK VZOREK'?'btCompareGood':sample==='VELMI MALÝ'?'btCompareBad':'btNeutral';return `<tr><td>≥ ${Math.round((x.threshold||0)*100)} %</td><td>${x.n??0}</td><td>${btPct(x.coverage)}</td><td>${btPct(x.avg_probability)}</td><td class="${(x.accuracy??0)>=.60?'btCompareGood':''}">${btPct(x.accuracy)}</td><td>${btCI(x.ci95_low,x.ci95_high)}</td><td>${btBrier(x.brier)}</td><td>${x.season_min_accuracy==null?'—':btPct(x.season_min_accuracy)+' ('+(x.seasons_with_sample??0)+' sez.)'}</td><td>${y.n??0}</td><td>${btPct(y.accuracy)}</td><td class="${cls}">${safe(sample)}</td></tr>`}).join('')+'</tbody></table>':'<div class="micro">Bez dat.</div>'}</div>`}).join('');
   }else{
     $('btM11Meta').innerHTML=chip('Model 11',m11.reason||'Málo dat');
     $('btM11Confidence').innerHTML='<div class="micro">Pro confidence pásma spusť alespoň 180 zápasů; nejlepší vypovídací hodnotu má 1500–2000 zápasů přes více sezon.</div>';
@@ -400,8 +415,9 @@ $('runBacktest').onclick=async()=>{
   const multi=season.startsWith('MULTI');
   if(team!=='ALL'&&!multi&&games>80)games=80;
   if(team!=='ALL'&&multi&&games>300)games=300;
+  if(team==='ALL'&&season==='20212022'&&games>1400)games=1400;
   btn.disabled=true;$('btResults').hidden=true;
-  $('btStatus').textContent=`Spouštím ${multi?'vícesezonní ':''}backtest ${games} zápasů… U 800+ zápasů se použije deep režim Model 10/11 a průběh uvidíš v procentech.`;
+  $('btStatus').textContent=season==='20212022'?`Spouštím nezávislý LOCKBOX 2021/22 (${games} max.)… Model je už zamknutý a nic se na této sezoně nepřelaďuje.`:`Spouštím ${multi?'vícesezonní ':''}backtest ${games} zápasů… U 800+ zápasů se použije deep režim Model 10/11/12 a průběh uvidíš v procentech.`;
   try{
     const sr=await fetch(`/backtest-start?team=${encodeURIComponent(team)}&season=${encodeURIComponent(season)}&games=${encodeURIComponent(games)}`),sj=await sr.json();
     if(!sr.ok)throw Error(sj.error||'Backtest se nepodařilo spustit');

@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.23 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.24 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -171,7 +171,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.23',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.24',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -208,7 +208,7 @@ def _nhl_json(path, ttl=21600):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.23', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.24', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -1542,7 +1542,7 @@ def _prefetch_backtest_histories(targets, progress=None):
 
     The 0.22 implementation prefetched thousands of *full* boxscores before
     parsing PBP. At 1500–2000 games that could exhaust Render memory or appear
-    frozen for a long time. 0.23 stores compact box/event summaries and treats
+    frozen for a long time. 0.24 stores compact box/event summaries and treats
     an isolated historical API failure as missing event coverage rather than
     aborting the entire job.
     """
@@ -2376,6 +2376,18 @@ def _dated_source_market(rows, market, source):
     return out
 
 
+def _wilson_interval(successes, n, z=1.959963984540054):
+    """95% Wilson score interval for a binomial hit rate."""
+    if not n:
+        return (None, None)
+    p = successes / n
+    z2 = z * z
+    den = 1.0 + z2 / n
+    center = (p + z2 / (2.0 * n)) / den
+    half = (z / den) * math.sqrt((p * (1.0 - p) / n) + z2 / (4.0 * n * n))
+    return (_clip(center - half, 0.0, 1.0), _clip(center + half, 0.0, 1.0))
+
+
 def _confidence_threshold_summary(predictions, threshold, min_season_n=20):
     total = len(predictions)
     chosen = [x for x in predictions if x.get('p') is not None and x['p'] >= threshold]
@@ -2386,9 +2398,12 @@ def _confidence_threshold_summary(predictions, threshold, min_season_n=20):
             'accuracy': None, 'brier': None, 'calibration_gap': None,
             'sample_status': 'BEZ DAT', 'seasons_with_sample': 0,
             'season_min_accuracy': None, 'season_max_accuracy': None,
+            'ci95_low': None, 'ci95_high': None,
         }
     avg_p = sum(x['p'] for x in chosen) / n
-    accuracy = sum(x['y'] for x in chosen) / n
+    wins = sum(x['y'] for x in chosen)
+    accuracy = wins / n
+    ci95_low, ci95_high = _wilson_interval(wins, n)
     brier = sum((x['p'] - x['y']) ** 2 for x in chosen) / n
 
     by_season = {}
@@ -2422,6 +2437,113 @@ def _confidence_threshold_summary(predictions, threshold, min_season_n=20):
         'season_min_accuracy': min(season_acc) if season_acc else None,
         'season_max_accuracy': max(season_acc) if season_acc else None,
         'season_details': season_rows,
+        'ci95_low': ci95_low, 'ci95_high': ci95_high,
+    }
+
+
+def _model12_lockbox(tuning_rows):
+    """0.24 final untouched-season check for already frozen candidates."""
+    ordered = sorted(tuning_rows, key=lambda x: x['sort_key'])
+    lockbox = []
+    for row in ordered:
+        try:
+            if _season_start(row.get('date')) == 2021:
+                lockbox.append(row)
+        except Exception:
+            continue
+    if len(lockbox) < 100:
+        return {
+            'available': False,
+            'reason': 'Pro Model 12 spusť samostatně sezónu 2021/22 (LOCKBOX) alespoň se 100 zápasy.',
+            'lockbox_games': len(lockbox),
+        }
+
+    markets = {
+        'h2h': ('Více střel · LOCK 5v5+tied', 'locked_h2h'),
+        'goals': ('Góly · LOCK efficiency+slot/PP', 'locked_goals'),
+    }
+    block_count = 8 if len(lockbox) >= 800 else 6 if len(lockbox) >= 480 else 4
+    min_gain = 0.0005
+    bounds = []
+    for i in range(block_count):
+        a = round(i * len(lockbox) / block_count)
+        b = round((i + 1) * len(lockbox) / block_count)
+        if b > a:
+            bounds.append((a, b))
+    block_count = len(bounds)
+    required_positive = max(2, math.ceil(block_count * .60)) if block_count else 0
+    result_markets = {}
+
+    for market, (label, source) in markets.items():
+        v1_all, cand_all, fold_gains = [], [], []
+        for a, b in bounds:
+            chunk = lockbox[a:b]
+            v1 = _collect_source_market(chunk, market, 'v1')
+            cand = _collect_source_market(chunk, market, source)
+            bv1, bc = _market_brier(v1), _market_brier(cand)
+            fold_gains.append(None if bv1 is None or bc is None else bv1 - bc)
+            v1_all.extend(v1)
+            cand_all.extend(cand)
+        a_sum = _metric_summary(v1_all, label)
+        c_sum = _metric_summary(cand_all, label)
+        valid = [g for g in fold_gains if g is not None]
+        positive = sum(g > 0 for g in valid)
+        mean_gain = sum(valid) / len(valid) if valid else None
+        worst_gain = min(valid) if valid else None
+        brier_gain = None if a_sum['brier'] is None or c_sum['brier'] is None else a_sum['brier'] - c_sum['brier']
+        wins = sum(x['y'] for x in cand_all)
+        ci_low, ci_high = _wilson_interval(wins, len(cand_all))
+        eligible = bool(valid and len(valid) == block_count and positive >= required_positive and
+                        brier_gain is not None and brier_gain >= min_gain and
+                        (worst_gain is None or worst_gain > -0.010))
+        result_markets[market] = {
+            'label': label, 'source': source, 'n': len(cand_all),
+            'accuracy_v1': a_sum['accuracy'], 'accuracy_candidate': c_sum['accuracy'],
+            'candidate_ci95_low': ci_low, 'candidate_ci95_high': ci_high,
+            'brier_v1': a_sum['brier'], 'brier_candidate': c_sum['brier'],
+            'brier_gain': brier_gain, 'positive_blocks': positive, 'blocks': block_count,
+            'mean_block_gain': mean_gain, 'worst_block_gain': worst_gain,
+            'eligible': eligible,
+        }
+
+    pairs = []
+    for row in lockbox:
+        ca = _market_prediction_rows(row['predictions']['locked_h2h'], row, 'h2h')
+        va = _market_prediction_rows(row['predictions']['v1'], row, 'h2h')
+        if ca and va:
+            pairs.append({'candidate': ca[0], 'v1': va[0]})
+    confidence = []
+    for threshold in (.60, .65, .70, .75, .80):
+        chosen = [x for x in pairs if x['candidate']['p'] >= threshold]
+        n = len(chosen)
+        if not n:
+            confidence.append({'threshold': threshold, 'n': 0, 'coverage': 0.0,
+                               'avg_probability': None, 'accuracy': None, 'ci95_low': None, 'ci95_high': None,
+                               'm1_same_accuracy': None, 'accuracy_delta_vs_m1': None, 'brier': None,
+                               'sample_status': 'BEZ DAT'})
+            continue
+        wins = sum(x['candidate']['y'] for x in chosen)
+        accuracy = wins / n
+        ci_low, ci_high = _wilson_interval(wins, n)
+        m1_accuracy = sum(x['v1']['y'] for x in chosen) / n
+        avg_p = sum(x['candidate']['p'] for x in chosen) / n
+        brier = sum((x['candidate']['p'] - x['candidate']['y']) ** 2 for x in chosen) / n
+        status = 'OK VZOREK' if n >= 100 else 'MALÝ VZOREK' if n >= 40 else 'VELMI MALÝ'
+        confidence.append({'threshold': threshold, 'n': n, 'coverage': n / len(pairs) if pairs else 0.0,
+                           'avg_probability': avg_p, 'accuracy': accuracy, 'ci95_low': ci_low, 'ci95_high': ci_high,
+                           'm1_same_accuracy': m1_accuracy, 'accuracy_delta_vs_m1': accuracy - m1_accuracy,
+                           'brier': brier, 'sample_status': status})
+
+    h2h_pass = bool(result_markets.get('h2h', {}).get('eligible'))
+    return {
+        'available': True, 'season': '2021/22', 'lockbox_games': len(lockbox),
+        'from': lockbox[0]['date'], 'to': lockbox[-1]['date'],
+        'block_count': block_count, 'required_positive_blocks': required_positive,
+        'min_brier_gain': min_gain, 'markets': result_markets,
+        'h2h_confidence': confidence,
+        'verdict': 'PROŠEL' if h2h_pass else 'NEPROŠEL',
+        'note': ('2021/22 je jednorázový lockbox. Kandidáti jsou před testem pevně daní a na této sezoně se nic nepřelaďuje. '
+                 '95% interval je Wilsonův interval binomické úspěšnosti.'),
     }
 
 
@@ -3274,7 +3396,7 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
     # experimental families (Models 4–9) were useful during discovery but make
     # a 2000-game job several times more expensive without adding evidence for
     # the currently locked candidates. Deep mode computes Model 1, Full and the
-    # five pre-declared 0.21 candidates needed by Models 10/11.
+    # five pre-declared 0.21 candidates needed by Models 10/11/12.
     deep_mode = game_limit > 600
     if deep_mode:
         keep = ('v1', 'full', 'locked_h2h', 'locked_goals',
@@ -3407,7 +3529,7 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
     report('Vyhodnocuji walk-forward a confidence pásma', None, None, 94)
     if deep_mode:
         legacy_reason = ('Deep režim 800+ záměrně nepočítá staré vývojové Modely 4–9. '
-                         'Šetří paměť/CPU a testuje jen předem zamknuté kandidáty přes Model 10/11.')
+                         'Šetří paměť/CPU a testuje jen předem zamknuté kandidáty přes Model 10/11/12.')
         model4 = {'available': False, 'reason': legacy_reason}
         model5 = {'available': False, 'reason': legacy_reason}
         model6 = {'available': False, 'reason': legacy_reason}
@@ -3423,6 +3545,7 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
         model9 = _model9_event_walk_forward(tuning_rows)
     model10 = _model10_locked_walk_forward(tuning_rows)
     model11 = _model11_confidence(tuning_rows)
+    model12 = _model12_lockbox(tuning_rows)
     report('Sestavuji výsledky', None, None, 98)
 
     evaluated_by_season = {}
@@ -3444,8 +3567,8 @@ def run_backtest(team, season_start, game_limit=10, progress=None):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'deep_mode': deep_mode, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
-        'warning': ('0.23 opravuje dlouhé 1500–2000zápasové testy: používá kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknutí kandidáti. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'model12': model12, 'deep_mode': deep_mode, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
+        'warning': ('0.24 přidává jednorázový lockbox 2021/22 pro pevně zamknuté kandidáty a 95% Wilsonovy intervaly k confidence pásmům. Dlouhé testy dál používají kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknuté kandidáty. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
                     'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. Živá Analýza dál používá Model 1 a locked kandidáty pouze jako shadow porovnání. '
                     'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
@@ -3489,7 +3612,7 @@ def _run_backtest_job(job_id, team, start, games):
     except MemoryError:
         payload = {'status': 'error',
                    'error': 'Serveru došla paměť při backtestu',
-                   'detail': 'Zkus verzi 0.23 znovu; deep režim má výrazně menší paměťové nároky.',
+                   'detail': 'Zkus verzi 0.24 znovu; deep režim má výrazně menší paměťové nároky.',
                    'finished_at': time.time()}
     except Exception as exc:
         payload = {'status': 'error', 'error': 'Backtest se nepodařilo dokončit',
@@ -3531,7 +3654,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.23', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.24', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -3570,7 +3693,7 @@ class Handler(SimpleHTTPRequestHandler):
             start = int(raw_season[:4])
             if raw_season != _season_id(start):
                 return None, 'Sezóna musí mít tvar 20252026'
-            games = max(5, min(1200 if team == 'ALL' else 80, games))
+            games = max(5, min(1400 if team == 'ALL' else 80, games))
         return (team, start, games), None
 
     def handle_backtest(self, query):
