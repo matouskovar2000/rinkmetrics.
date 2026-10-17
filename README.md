@@ -1,16 +1,14 @@
-# NHL Team Shots Analyzer 0.27
+# NHL Team Shots Analyzer 0.28
 
-Verze 0.27 je skutečný redesign hlavní obrazovky Analýzy podle schváleného světlého návrhu. Výpočty a produkční logika zůstávají stejné jako v 0.26.
+Verze 0.28 je skutečný vizuální redesign Analýzy podle schváleného světlého mockupu. Produkční modely a jejich matematika se nemění.
 
-## Nové rozložení
-- velká horní karta zápasu s logy NHL týmů, domácí/venkovní rolí a očekávanými střelami;
-- samostatná karta Výsledek analýzy;
-- dominantní karta Tip sázky s pěti trhy a výrazným zeleno/červeným porovnáním;
-- Forma a kvalita dat + Produkční model vedle sebe;
-- Odpočinek/cestování/sestavy + Vyhodnocení kurzu vedle sebe;
-- graf posledních zápasů přes celou šířku;
-- ruční scénář výkonu je schovaný v rozbalovací sekci;
-- projektované sestavy jsou rozbalovací, protože jsou detailní a nejsou započítané do modelu.
+## Vzhled
+- větší loga týmů, názvy a hlavní očekávané hodnoty;
+- výraznější karta Výsledek analýzy;
+- dominantní zelená karta Tip sázky s jasným favoritem a sílou signálu;
+- větší typografie, více prostoru a méně technického dojmu;
+- forma/model a cestování/kurz jsou stále dostupné, ale vizuálně až pod hlavním rozhodovacím blokem;
+- zelená znamená lepší/vyšší hodnotu, červená horší/nižší; význam je doplněn šipkou, ne pouze barvou.
 
 ## Model
-Produkční `LOCK 5v5+tied` pro trh Více střel se nemění. Fallback na Model 1, lockbox validace, confidence pásma, Backtest a Moje tipy zůstávají funkčně stejné.
+LOCK 5v5+tied pro Více střel zůstává beze změny oproti 0.27/0.25. Backtest, lockbox, Moje tipy a serverová logika nejsou redesignem přelaďovány.
