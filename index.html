@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NHL Team Shots Analyzer 0.22</title>
+<title>NHL Team Shots Analyzer 0.23</title>
 <style>
 :root{
   color-scheme:dark;--bg:#07101a;--bg2:#0a1522;--panel:#0d1b2a;--panel2:#101f31;
@@ -41,7 +41,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.22</div></div></div>
+    <div class="brand"><div class="brandMark">🏒</div><div><h1>NHL Team Shots <span>Analyzer</span></h1><div class="sub">Statistiky · Analýzy · Kurzy · Verze 0.23</div></div></div>
     <nav class="nav"><button id="navAnalysis" class="active">▥ Analýza</button><button id="navBacktest">⌁ Backtest</button><button id="navTips">↻ Moje tipy</button></nav>
   </header>
 
@@ -101,7 +101,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
         </article>
 
         <article class="card">
-          <div class="cardTitle">Experimentální model 0.22 · shadow</div>
+          <div class="cardTitle">Experimentální model 0.23 · shadow</div>
           <div id="shadowInfo" class="note">Po spuštění analýzy porovnám Model 1 se zamknutým 5v5+tied modelem pro více střel a zamknutým gólovým profilem. Shadow model nic nemění v hlavním výpočtu ani EV.</div>
         </article>
 
@@ -148,14 +148,14 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
   <main id="backtestPage" hidden>
     <section class="selector">
       <div class="sectionTitle">Historický backtest <span class="betaTag">BETA</span></div>
-      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.22 rozšiřuje validaci až na <strong>4 kompletní sezóny / 2000 zápasů</strong> a přidává <strong>Model 11 Confidence</strong>: předem daná pásma jistoty 60/65/70/75/80 % se měří pouze na chronologické forward části. V živé Analýze zůstává Model 1 a kandidáti se zobrazují pouze jako shadow porovnání.</div>
+      <div class="micro" style="margin-bottom:9px">Model se pro každý historický zápas počítá jen z dat dostupných <strong>před</strong> utkáním. Verze 0.23 opravuje dlouhý <strong>4sezonní / 2000zápasový</strong> běh: drží v paměti jen kompaktní historická data, opakuje dočasně neúspěšné NHL API požadavky a ukazuje skutečný průběh. <strong>Model 11 Confidence</strong> dál měří předem daná pásma 60/65/70/75/80 % pouze na chronologické forward části. V živé Analýze zůstává Model 1 a kandidáti se zobrazují pouze jako shadow porovnání.</div>
       <div class="backtestControls">
         <div><label>Rozsah / tým</label><select id="btTeam"></select></div>
         <div><label>Sezóna</label><select id="btSeason"><option value="MULTI4" selected>2022/23 + 2023/24 + 2024/25 + 2025/26</option><option value="MULTI3">2023/24 + 2024/25 + 2025/26</option><option value="MULTI2">2024/25 + 2025/26</option><option value="20252026">2025/26</option><option value="20242025">2024/25</option><option value="20232024">2023/24</option><option value="20222023">2022/23</option><option value="20262027">2026/27</option></select></div>
         <div><label>Počet zápasů</label><select id="btGames"><option value="100">100</option><option value="300">300</option><option value="600">600</option><option value="800">800</option><option value="1000">1000</option><option value="1500">1500</option><option value="2000" selected>2000</option></select></div>
         <button id="runBacktest" class="run">Spustit backtest</button>
       </div>
-      <div id="btStatus" class="status">Doporučený tvrdý test: „Celá NHL“ + 4 sezóny + 2000 zápasů. Zápasy se berou rovnoměrně z celé sezóny, ne jen z jejího konce. U velkého testu běží výpočet na serveru jako úloha, takže první spuštění může trvat déle.</div>
+      <div id="btStatus" class="status">Doporučený tvrdý test: „Celá NHL“ + 4 sezóny + 2000 zápasů. U 800+ zápasů se automaticky zapne <strong>deep režim</strong>: počítá Model 1 + zamknuté kandidáty potřebné pro Model 10/11 a přeskočí staré vývojové modely 4–9. Díky tomu má test výrazně menší nároky a průběh se zobrazuje procenty.</div>
     </section>
     <section id="btResults" hidden class="dashboard" style="grid-template-columns:1fr">
       <article class="card"><div class="cardTitle">Souhrn validace</div><div id="btSummary" class="btSummary"></div><div id="btModel" class="note"></div><div id="btFactors" class="factorChips"></div></article>
@@ -187,7 +187,7 @@ label{display:block;color:#8da6bb;font-size:11px;margin:0 0 5px}.field,select,in
     </section>
   </main>
 
-  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Živá Analýza stále počítá Model 1; locked kandidáti jsou jen shadow porovnání a nemění EV. Verze 0.22 přidává 4sezonní test až 2000 zápasů, reprezentativní výběr napříč sezonou a confidence pásma 60–80 %. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
+  <div class="footer">Zdroj zápasů: NHL Web API. Denní projektované sestavy, brankáři, scratches a zranění: NHL.com. Živá Analýza stále počítá Model 1; locked kandidáti jsou jen shadow porovnání a nemění EV. Verze 0.23 opravuje 1500–2000zápasový běh pomocí deep režimu, kompaktní cache, retry NHL API a živého průběhu; confidence pásma 60–80 % zůstávají stejná. Historické kurzy bookmakerů nejsou součástí backtestu.</div>
 </div>
 <script>
 const teams={ANA:'Anaheim Ducks',BOS:'Boston Bruins',BUF:'Buffalo Sabres',CGY:'Calgary Flames',CAR:'Carolina Hurricanes',CHI:'Chicago Blackhawks',COL:'Colorado Avalanche',CBJ:'Columbus Blue Jackets',DAL:'Dallas Stars',DET:'Detroit Red Wings',EDM:'Edmonton Oilers',FLA:'Florida Panthers',LAK:'Los Angeles Kings',MIN:'Minnesota Wild',MTL:'Montreal Canadiens',NSH:'Nashville Predators',NJD:'New Jersey Devils',NYI:'New York Islanders',NYR:'New York Rangers',OTT:'Ottawa Senators',PHI:'Philadelphia Flyers',PIT:'Pittsburgh Penguins',SEA:'Seattle Kraken',SJS:'San Jose Sharks',STL:'St. Louis Blues',TBL:'Tampa Bay Lightning',TOR:'Toronto Maple Leafs',UTA:'Utah Mammoth',VAN:'Vancouver Canucks',VGK:'Vegas Golden Knights',WSH:'Washington Capitals',WPG:'Winnipeg Jets'};
@@ -263,7 +263,7 @@ function renderBacktest(d){
   const scope=d.scope==='league'?'Celá NHL':teams[d.team]||d.team,v1=d.models?.v1,full=d.models?.full;
   $('btSummary').innerHTML=`<div class="btMetric"><span>Vyhodnocené zápasy</span><b>${d.evaluated_games}</b></div><div class="btMetric"><span>Rozsah</span><b>${safe(scope)}</b></div><div class="btMetric"><span>Sezóna</span><b>${safe(d.season_label||String(d.season))}</b></div><div class="btMetric"><span>Doba výpočtu</span><b>${safe(d.elapsed_seconds)} s</b></div>`;
   const seasonCounts=Object.entries(d.evaluated_by_season||{}).map(([k,v])=>`${k}: ${v}`).join(' · ');
-  $('btModel').innerHTML=`<strong>Model 1:</strong> ${safe(v1?.description||'—')}<br><strong>0.22:</strong> Model 10 drží fixní kandidáty a Model 11 měří jejich skutečnou úspěšnost v předem daných pásmech jistoty pouze na forward části. Zápasy jsou v každé sezoně rozložené napříč celým ročníkem. Přeskočeno: ${d.skipped_games}.${seasonCounts?'<br><strong>Vyhodnoceno podle sezon:</strong> '+safe(seasonCounts):''}`;
+  $('btModel').innerHTML=`<strong>Model 1:</strong> ${safe(v1?.description||'—')}<br><strong>0.23:</strong> Model 10 drží fixní kandidáty a Model 11 měří confidence pásma pouze na forward části. ${d.deep_mode?'<strong>Deep režim:</strong> staré vývojové Modely 4–9 byly u velkého testu přeskočeny, aby 1500–2000 zápasů spolehlivě doběhlo. ':''}Zápasy jsou v každé sezoně rozložené napříč celým ročníkem. Přeskočeno: ${d.skipped_games}.${seasonCounts?'<br><strong>Vyhodnoceno podle sezon:</strong> '+safe(seasonCounts):''}`;
   const fs=d.factor_summary||{},chip=(label,value)=>`<span class="factorChip">${safe(label)}: <strong>${safe(value)}</strong></span>`;
   $('btFactors').innerHTML=[chip('B2B tým-zápasy',fs.b2b_team_games??'—'),chip('Prům. cestování',fs.avg_travel_km==null?'—':Math.round(fs.avg_travel_km)+' km'),chip('Prům. |kontext střel doma|',fs.home_context_shots?.mean_abs==null?'—':Number(fs.home_context_shots.mean_abs).toFixed(2)),chip('Prům. |kontext střel venku|',fs.away_context_shots?.mean_abs==null?'—':Number(fs.away_context_shots.mean_abs).toFixed(2))].join('');
   const order=['h2h','team','total','goals','winner'],cmp=d.comparison||{};
@@ -401,7 +401,7 @@ $('runBacktest').onclick=async()=>{
   if(team!=='ALL'&&!multi&&games>80)games=80;
   if(team!=='ALL'&&multi&&games>300)games=300;
   btn.disabled=true;$('btResults').hidden=true;
-  $('btStatus').textContent=`Spouštím ${multi?'vícesezonní ':''}backtest ${games} zápasů. U velkého vzorku se načítají tisíce historických boxscore/PBP záznamů; první běh může trvat déle, další běhy ve stejném serverovém procesu využijí cache…`;
+  $('btStatus').textContent=`Spouštím ${multi?'vícesezonní ':''}backtest ${games} zápasů… U 800+ zápasů se použije deep režim Model 10/11 a průběh uvidíš v procentech.`;
   try{
     const sr=await fetch(`/backtest-start?team=${encodeURIComponent(team)}&season=${encodeURIComponent(season)}&games=${encodeURIComponent(games)}`),sj=await sr.json();
     if(!sr.ok)throw Error(sj.error||'Backtest se nepodařilo spustit');
@@ -413,7 +413,11 @@ $('runBacktest').onclick=async()=>{
       if(!rr.ok)throw Error(st.error||'Nelze zjistit stav backtestu');
       if(st.status==='running'){
         const sec=Math.round(st.elapsed_seconds||0),min=Math.floor(sec/60),rest=sec%60;
-        $('btStatus').textContent=`Počítám ${games} zápasů… ${min?min+' min ':''}${rest} s. Výpočet běží na serveru; můžeš nechat tuto stránku otevřenou.`;
+        const pct=Number.isFinite(Number(st.progress_percent))?Number(st.progress_percent).toFixed(1)+' %':'—';
+        const phase=st.phase||'Počítám';
+        const count=(st.progress_current!=null&&st.progress_total)?` · ${st.progress_current}/${st.progress_total}`:'';
+        const heartbeat=Number(st.heartbeat_age||0)>90?' · server stále čeká/retry NHL API':'';
+        $('btStatus').textContent=`${phase} · ${pct}${count} · ${min?min+' min ':''}${rest} s${heartbeat}`;
         continue;
       }
       if(st.status==='error')throw Error((st.error||'Backtest selhal')+(st.detail?' · '+st.detail:''));

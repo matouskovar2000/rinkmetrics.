@@ -1,4 +1,4 @@
-"""NHL Team Shots Analyzer 0.22 — static site, NHL API proxy and official NHL.com lineup reader."""
+"""NHL Team Shots Analyzer 0.23 — static site, NHL API proxy and official NHL.com lineup reader."""
 import json
 import os
 import re
@@ -6,7 +6,7 @@ import time
 import math
 import secrets
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
@@ -57,6 +57,8 @@ _history_cache = {}
 _history_cache_lock = threading.Lock()
 _event_cache = {}
 _event_cache_lock = threading.Lock()
+_box_summary_cache = {}
+_box_summary_cache_lock = threading.Lock()
 
 _backtest_jobs = {}
 _backtest_jobs_lock = threading.Lock()
@@ -169,7 +171,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.22',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.23',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -188,21 +190,44 @@ def fetch_lineups(force=False):
 
 
 def _nhl_json(path, ttl=21600):
-    """Cached JSON reader for NHL API. Historical responses are stable enough for long cache windows."""
+    """Cached NHL JSON reader with conservative retries for long historical jobs.
+
+    A 2000-game backtest can make thousands of upstream requests. One transient
+    429/5xx/timeout must not kill the entire validation run, so retryable errors
+    get a short exponential backoff. Historical responses are cached in memory.
+    """
     now = time.time()
     with _nhl_cache_lock:
         cached = _nhl_cache.get(path)
         if cached and now - cached[0] < ttl:
             return cached[1]
-    req = Request(
-        'https://api-web.nhle.com/v1' + path,
-        headers={'User-Agent': 'NHLShotsAnalyzer/0.22', 'Accept': 'application/json'},
-    )
-    with urlopen(req, timeout=18) as response:
-        data = json.loads(response.read(3_000_000).decode('utf-8'))
-    with _nhl_cache_lock:
-        _nhl_cache[path] = (now, data)
-    return data
+
+    retry_codes = {429, 500, 502, 503, 504}
+    last_exc = None
+    for attempt in range(4):
+        try:
+            req = Request(
+                'https://api-web.nhle.com/v1' + path,
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.23', 'Accept': 'application/json'},
+            )
+            with urlopen(req, timeout=18) as response:
+                data = json.loads(response.read(3_000_000).decode('utf-8'))
+            with _nhl_cache_lock:
+                _nhl_cache[path] = (time.time(), data)
+            return data
+        except HTTPError as exc:
+            last_exc = exc
+            if exc.code not in retry_codes or attempt >= 3:
+                raise
+        except (URLError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt >= 3:
+                raise
+        # A little jitter avoids all prefetch workers retrying in lock-step.
+        time.sleep((0.7 * (2 ** attempt)) + ((hash(path) & 7) * 0.03))
+    if last_exc:
+        raise last_exc
+    raise URLError('NHL API request failed')
 
 
 def _games_from_schedule(data):
@@ -234,6 +259,54 @@ def _completed_regular(game):
 
 def _game_id(game):
     return game.get('id') or game.get('gameId')
+
+
+def _game_box_summary(game_id):
+    """Return a compact boxscore summary and discard the heavy raw document.
+
+    Large multi-season runs used to keep thousands of full boxscore JSON objects
+    in RAM. That was the main reason Render could stall/restart before a
+    2000-game run finished. We retain only the values needed by the models.
+    """
+    with _box_summary_cache_lock:
+        cached = _box_summary_cache.get(game_id)
+    if cached is not None:
+        return cached
+
+    path = f'/gamecenter/{game_id}/boxscore'
+    box = _nhl_json(path)
+    home = box.get('homeTeam') or {}
+    away = box.get('awayTeam') or {}
+    pbg = box.get('playerByGameStats') or {}
+    player_team = {}
+    for side, team in (('homeTeam', home), ('awayTeam', away)):
+        team_id = team.get('id')
+        if not team_id:
+            continue
+        groups = pbg.get(side) or {}
+        for group in ('forwards', 'defense', 'goalies'):
+            for player in groups.get(group) or []:
+                pid = player.get('playerId')
+                if pid:
+                    player_team[pid] = team_id
+
+    result = {
+        'home': {
+            'id': home.get('id'), 'abbrev': home.get('abbrev'),
+            'sog': home.get('sog'), 'score': home.get('score'),
+        },
+        'away': {
+            'id': away.get('id'), 'abbrev': away.get('abbrev'),
+            'sog': away.get('sog'), 'score': away.get('score'),
+        },
+        'player_team': player_team,
+    }
+    with _box_summary_cache_lock:
+        _box_summary_cache[game_id] = result
+    # Keep compact summaries only. Raw boxscore documents are much larger.
+    with _nhl_cache_lock:
+        _nhl_cache.pop(path, None)
+    return result
 
 
 def _game_event_summary(game_id):
@@ -273,21 +346,11 @@ def _game_event_summary(game_id):
     score = {home_id: 0, away_id: 0}
     regulation_score = {home_id: 0, away_id: 0}
 
-    # Player IDs make blocked-shot attribution more robust. The feed often owns
-    # a blocked event by the blocking team, while shootingPlayerId identifies
-    # the actual attacking skater. If the boxscore roster is unavailable we
-    # still fall back to the opposite of eventOwnerTeamId.
-    player_team = {}
+    # Player IDs make blocked-shot attribution more robust. The compact
+    # boxscore summary stores only player->team mapping instead of retaining
+    # the entire historical boxscore document in RAM.
     try:
-        box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
-        pbg = box.get('playerByGameStats') or {}
-        for side, team_id in (('homeTeam', home_id), ('awayTeam', away_id)):
-            groups = pbg.get(side) or {}
-            for group in ('forwards', 'defense', 'goalies'):
-                for player in groups.get(group) or []:
-                    pid = player.get('playerId')
-                    if pid:
-                        player_team[pid] = team_id
+        player_team = dict((_game_box_summary(game_id) or {}).get('player_team') or {})
     except Exception:
         player_team = {}
 
@@ -404,12 +467,15 @@ def _game_event_summary(game_id):
 
 def _box_row(game, team):
     game_id = _game_id(game)
-    box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
-    home_team = (box.get('homeTeam') or {}).get('abbrev')
-    away_team = (box.get('awayTeam') or {}).get('abbrev')
+    try:
+        box = _game_box_summary(game_id)
+    except Exception:
+        return None
+    home_team = (box.get('home') or {}).get('abbrev')
+    away_team = (box.get('away') or {}).get('abbrev')
     home = home_team == team
-    own = box.get('homeTeam') if home else box.get('awayTeam')
-    opp = box.get('awayTeam') if home else box.get('homeTeam')
+    own = box.get('home') if home else box.get('away')
+    opp = box.get('away') if home else box.get('home')
     if not own or not opp or not home_team or not away_team:
         return None
     vals = [own.get('sog'), opp.get('sog'), own.get('score'), opp.get('score')]
@@ -485,6 +551,11 @@ def _history_before(team, game_date, n=30):
             rows = [r for r in pool.map(lambda g: _box_row(g, team), selected) if r]
     with _history_cache_lock:
         _history_cache[key] = rows
+        # A deep 2000-game run creates thousands of team/date windows. Keep a
+        # rolling cache only; compact box/event summaries remain cached and make
+        # an evicted window cheap to rebuild.
+        while len(_history_cache) > 420:
+            _history_cache.pop(next(iter(_history_cache)))
     return rows
 
 
@@ -1466,8 +1537,19 @@ def _prepare_backtest_targets(team, season_start, game_limit):
     )[:game_limit]
 
 
-def _prefetch_backtest_histories(targets):
-    """Warm schedule/boxscore/PBP caches so league-wide validation is practical on Render."""
+def _prefetch_backtest_histories(targets, progress=None):
+    """Warm compact historical caches with bounded memory and live progress.
+
+    The 0.22 implementation prefetched thousands of *full* boxscores before
+    parsing PBP. At 1500–2000 games that could exhaust Render memory or appear
+    frozen for a long time. 0.23 stores compact box/event summaries and treats
+    an isolated historical API failure as missing event coverage rather than
+    aborting the entire job.
+    """
+    def report(phase, current=None, total=None, percent=None):
+        if progress:
+            progress(phase, current=current, total=total, percent=percent)
+
     needed_schedule = set()
     target_ids = []
     for game in targets:
@@ -1482,8 +1564,25 @@ def _prefetch_backtest_histories(targets):
         for t in (home, away):
             needed_schedule.add((t, start))
             needed_schedule.add((t, start - 1))
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        list(pool.map(lambda x: _team_schedule(x[0], x[1]), needed_schedule))
+
+    schedules = list(needed_schedule)
+    report('Načítám týmové rozpisy', 0, len(schedules), 4)
+    if schedules:
+        done = 0
+        lock = threading.Lock()
+        def one_schedule(item):
+            try:
+                return _team_schedule(item[0], item[1])
+            except Exception:
+                return None
+            finally:
+                nonlocal done
+                with lock:
+                    done += 1
+                    if done == len(schedules) or done % 12 == 0:
+                        report('Načítám týmové rozpisy', done, len(schedules), 4 + 5 * done / len(schedules))
+        with ThreadPoolExecutor(max_workers=min(10, len(schedules))) as pool:
+            list(pool.map(one_schedule, schedules))
 
     history_ids = set(target_ids)
     for game in targets:
@@ -1497,13 +1596,35 @@ def _prefetch_backtest_histories(targets):
                 gid = _game_id(old)
                 if gid:
                     history_ids.add(gid)
-    _prefetch([f'/gamecenter/{gid}/boxscore' for gid in history_ids], workers=18)
-    # 0.21 event models need PBP for the same historical games used by each
-    # pre-game feature window. Parse it directly into compact summaries so we
-    # do not retain hundreds of full play-by-play documents in memory.
-    if history_ids:
-        with ThreadPoolExecutor(max_workers=min(16, len(history_ids))) as pool:
-            list(pool.map(_game_event_summary, history_ids))
+
+    ids = list(history_ids)
+    total = len(ids)
+    if not ids:
+        return
+
+    def warm_parallel(fn, phase, start_pct, end_pct, workers):
+        done = 0
+        report(phase, 0, total, start_pct)
+        def safe(gid):
+            try:
+                fn(gid)
+                return True
+            except Exception:
+                return False
+        with ThreadPoolExecutor(max_workers=min(workers, total)) as pool:
+            futures = [pool.submit(safe, gid) for gid in ids]
+            for fut in as_completed(futures):
+                done += 1
+                # Progress updates are intentionally sparse to avoid lock churn.
+                if done == total or done % 25 == 0:
+                    pct = start_pct + (end_pct - start_pct) * done / total
+                    report(phase, done, total, pct)
+
+    # Compact box summaries first: they are also used for blocked-shot ownership.
+    warm_parallel(_game_box_summary, 'Načítám boxscore historii', 10, 32, 12)
+    # PBP is the expensive part. Lower concurrency is friendlier to NHL API and
+    # retries handle occasional 429/5xx responses.
+    warm_parallel(_game_event_summary, 'Načítám play-by-play historii', 32, 68, 10)
 
 
 def _record_line(bucket, expected, actual, line, max_n=135):
@@ -3103,10 +3224,16 @@ def _model5_select(tuning_rows, empty_markets, empty_lines):
         'final_games': list(reversed(rows_out)),
     }
 
-def run_backtest(team, season_start, game_limit=10):
+def run_backtest(team, season_start, game_limit=10, progress=None):
     started = time.time()
+    def report(phase, current=None, total=None, percent=None):
+        if progress:
+            progress(phase, current=current, total=total, percent=percent)
+
+    report('Připravuji vzorek zápasů', 0, game_limit, 1)
     targets = _prepare_backtest_targets(team, season_start, game_limit)
-    _prefetch_backtest_histories(targets)
+    report('Připravuji historická data', 0, len(targets), 3)
+    _prefetch_backtest_histories(targets, progress=progress)
 
     def empty_markets():
         return {'h2h': [], 'team': [], 'total': [], 'goals': [], 'winner': []}
@@ -3143,11 +3270,27 @@ def run_backtest(team, season_start, game_limit=10):
         'total_neutral': ('Neutral pace celkové střely', '0.21 experiment: 5v5/tied attempt pace + převod na SOG', _predict_game_total_neutral),
         'winner_plus': ('Possession+goals 1/X/2', '0.21 experiment: possession profil + stabilnější gólový profil', _predict_game_winner_plus),
     }
+    # For 800+ games we switch to a focused deep-validation path. Legacy
+    # experimental families (Models 4–9) were useful during discovery but make
+    # a 2000-game job several times more expensive without adding evidence for
+    # the currently locked candidates. Deep mode computes Model 1, Full and the
+    # five pre-declared 0.21 candidates needed by Models 10/11.
+    deep_mode = game_limit > 600
+    if deep_mode:
+        keep = ('v1', 'full', 'locked_h2h', 'locked_goals',
+                'team_neutral', 'total_neutral', 'winner_plus')
+        specs = {key: specs[key] for key in keep}
+
     stores = {key: {'markets': empty_markets(), 'lines': empty_lines()} for key in specs}
     game_rows, factor_rows, tuning_rows = [], [], []
     skipped = 0
 
-    for game in targets:
+    total_targets = len(targets)
+    report('Počítám předzápasové modely', 0, total_targets, 69)
+    for target_index, game in enumerate(targets, 1):
+        if target_index == total_targets or target_index % 10 == 0:
+            report('Počítám předzápasové modely', target_index, total_targets,
+                   69 + 23 * target_index / max(1, total_targets))
         home = (game.get('homeTeam') or {}).get('abbrev')
         away = (game.get('awayTeam') or {}).get('abbrev')
         date = game.get('gameDate') or (game.get('startTimeUTC') or '')[:10]
@@ -3162,12 +3305,15 @@ def run_backtest(team, season_start, game_limit=10):
             skipped += 1
             continue
 
-        box = _nhl_json(f'/gamecenter/{game_id}/boxscore')
-        ht, at = box.get('homeTeam') or {}, box.get('awayTeam') or {}
         try:
+            box = _game_box_summary(game_id)
+            ht, at = box.get('home') or {}, box.get('away') or {}
             hs, aas = float(ht.get('sog')), float(at.get('sog'))
             hg, ag = float(ht.get('score')), float(at.get('score'))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, HTTPError, URLError, TimeoutError):
+            skipped += 1
+            continue
+        except Exception:
             skipped += 1
             continue
 
@@ -3258,14 +3404,26 @@ def run_backtest(team, season_start, game_limit=10):
     travel_vals = [float(v) for x in factor_rows for v in (x.get('home_travel_km'), x.get('away_travel_km')) if v is not None]
     factor_summary['avg_travel_km'] = sum(travel_vals)/len(travel_vals) if travel_vals else None
 
-    model4 = _model4_train_test(tuning_rows, empty_markets, empty_lines)
-    model5 = _model5_select(tuning_rows, empty_markets, empty_lines)
-    model6 = _model6_profiles(tuning_rows, empty_markets, empty_lines)
-    model7 = _model7_walk_forward(tuning_rows)
-    model8 = _model8_specialists_walk_forward(tuning_rows)
-    model9 = _model9_event_walk_forward(tuning_rows)
+    report('Vyhodnocuji walk-forward a confidence pásma', None, None, 94)
+    if deep_mode:
+        legacy_reason = ('Deep režim 800+ záměrně nepočítá staré vývojové Modely 4–9. '
+                         'Šetří paměť/CPU a testuje jen předem zamknuté kandidáty přes Model 10/11.')
+        model4 = {'available': False, 'reason': legacy_reason}
+        model5 = {'available': False, 'reason': legacy_reason}
+        model6 = {'available': False, 'reason': legacy_reason}
+        model7 = {'available': False, 'reason': legacy_reason}
+        model8 = {'available': False, 'reason': legacy_reason}
+        model9 = {'available': False, 'reason': legacy_reason}
+    else:
+        model4 = _model4_train_test(tuning_rows, empty_markets, empty_lines)
+        model5 = _model5_select(tuning_rows, empty_markets, empty_lines)
+        model6 = _model6_profiles(tuning_rows, empty_markets, empty_lines)
+        model7 = _model7_walk_forward(tuning_rows)
+        model8 = _model8_specialists_walk_forward(tuning_rows)
+        model9 = _model9_event_walk_forward(tuning_rows)
     model10 = _model10_locked_walk_forward(tuning_rows)
     model11 = _model11_confidence(tuning_rows)
+    report('Sestavuji výsledky', None, None, 98)
 
     evaluated_by_season = {}
     for row in tuning_rows:
@@ -3286,8 +3444,8 @@ def run_backtest(team, season_start, game_limit=10):
         'elapsed_seconds': round(time.time() - started, 1),
         'models': models, 'comparison': comparison, 'ablation': ablation,
         'calibration_oos': calibration_oos, 'factor_summary': factor_summary,
-        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
-        'warning': ('0.22 rozšiřuje test až na čtyři kompletní sezóny a 2000 reprezentativně rozložených zápasů. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
+        'model4': model4, 'model5': model5, 'model6': model6, 'model7': model7, 'model8': model8, 'model9': model9, 'model10': model10, 'model11': model11, 'deep_mode': deep_mode, 'evaluated_by_season': evaluated_by_season, 'games': game_rows,
+        'warning': ('0.23 opravuje dlouhé 1500–2000zápasové testy: používá kompaktní box/PBP cache, retry při dočasné chybě NHL API a pro 800+ zápasů soustředěný deep režim Model 1 + zamknutí kandidáti. Model 11 ukazuje předem daná pásma jistoty 60/65/70/75/80 % pouze na chronologické forward části. '
                     'Vysoká úspěšnost s malým vzorkem není považována za důkaz; vždy se sleduje N, pokrytí, Brier a sezónní stabilita. Živá Analýza dál používá Model 1 a locked kandidáty pouze jako shadow porovnání. '
                     'Slot proxy není oficiální xG. Historické kurzy bookmakerů nejsou součástí backtestu.'),
     }
@@ -3302,17 +3460,45 @@ def _cleanup_backtest_jobs():
             _backtest_jobs.pop(jid, None)
 
 
+def _update_backtest_job_progress(job_id, phase, current=None, total=None, percent=None):
+    with _backtest_jobs_lock:
+        job = _backtest_jobs.get(job_id)
+        if not job or job.get('status') != 'running':
+            return
+        job['phase'] = phase
+        if current is not None:
+            job['progress_current'] = int(current)
+        if total is not None:
+            job['progress_total'] = int(total)
+        if percent is not None:
+            job['progress_percent'] = round(float(percent), 1)
+        job['heartbeat_at'] = time.time()
+
+
 def _run_backtest_job(job_id, team, start, games):
+    def progress(phase, current=None, total=None, percent=None):
+        _update_backtest_job_progress(job_id, phase, current, total, percent)
     try:
-        result = run_backtest(team, start, games)
-        payload = {'status': 'done', 'result': result, 'finished_at': time.time()}
+        result = run_backtest(team, start, games, progress=progress)
+        payload = {'status': 'done', 'result': result, 'finished_at': time.time(),
+                   'phase': 'Hotovo', 'progress_percent': 100.0}
     except HTTPError as exc:
         payload = {'status': 'error', 'error': f'NHL API při backtestu odpovědělo HTTP {exc.code}', 'finished_at': time.time()}
     except (URLError, TimeoutError):
         payload = {'status': 'error', 'error': 'NHL API není při backtestu dostupné', 'finished_at': time.time()}
+    except MemoryError:
+        payload = {'status': 'error',
+                   'error': 'Serveru došla paměť při backtestu',
+                   'detail': 'Zkus verzi 0.23 znovu; deep režim má výrazně menší paměťové nároky.',
+                   'finished_at': time.time()}
     except Exception as exc:
         payload = {'status': 'error', 'error': 'Backtest se nepodařilo dokončit',
                    'detail': str(exc)[:180], 'finished_at': time.time()}
+    finally:
+        # Team/date windows are the largest rebuildable objects. Compact box and
+        # event summaries stay cached so a second run remains much faster.
+        with _history_cache_lock:
+            _history_cache.clear()
     with _backtest_jobs_lock:
         job = _backtest_jobs.get(job_id)
         if job:
@@ -3345,7 +3531,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.22', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.23', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
@@ -3417,8 +3603,9 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.respond(409, {'error': 'Jiný velký backtest právě běží. Počkej na jeho dokončení.'})
             job_id = secrets.token_hex(8)
             _backtest_jobs[job_id] = {
-                'status': 'running', 'created_at': time.time(), 'key': key,
-                'team': team, 'games': games,
+                'status': 'running', 'created_at': time.time(), 'heartbeat_at': time.time(), 'key': key,
+                'team': team, 'games': games, 'phase': 'Čekám na start',
+                'progress_percent': 0.0, 'progress_current': 0, 'progress_total': games,
             }
         worker = threading.Thread(target=_run_backtest_job, args=(job_id, team, start, games), daemon=True)
         worker.start()
@@ -3440,6 +3627,11 @@ class Handler(SimpleHTTPRequestHandler):
                     'status': 'running',
                     'elapsed_seconds': round(time.time() - created, 1),
                     'games': job.get('games'),
+                    'phase': job.get('phase'),
+                    'progress_percent': job.get('progress_percent'),
+                    'progress_current': job.get('progress_current'),
+                    'progress_total': job.get('progress_total'),
+                    'heartbeat_age': round(time.time() - job.get('heartbeat_at', created), 1),
                 }
             elif status == 'done':
                 payload = {'status': 'done', 'result': job.get('result')}
