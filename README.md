@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.36
+# NHL Team Shots Analyzer 0.37
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -37,3 +37,12 @@ Finální vizuální kontrola proti schválenému mockupu: header a navigace, ik
 
 ## 0.36
 Vizuální doladění podle schváleného mockupu a skutečného screenshotu z Androidu. Výpočty a produkční LOCK 5v5+tied se nemění.
+
+
+## 0.37 – advanced analysis
+- Vzhled 0.36 zůstává beze změny.
+- Očekávané střely jsou nyní po načtení LOCKu sjednocené mezi hero kartou, Výsledkem analýzy a Produkčním modelem.
+- Technické detaily LOCKu ukazují rozdíl proti Modelu 1, změnu pravděpodobnosti, vážený shot-attempt control a vysvětlení, co model posunulo.
+- Lockbox 95% interval je výslovně označen jako historické pásmo, ne interval dnešní predikce.
+- Vyhodnocení kurzu nově ukazuje break-even pravděpodobnost a rozdíl modelu v procentních bodech.
+- Žádné váhy ani produkční model nebyly přeladěny.
