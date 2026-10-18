@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.35
+# NHL Team Shots Analyzer 0.36
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -23,13 +23,17 @@ Tato verze mění pouze vizuální proporce Analýzy na mobilu tak, aby odpovíd
 Opravena mobilní typografie a velikosti prvků. Verze 0.31 byla na telefonu přepisována příliš agresivním breakpointem a text i karty se zmenšovaly pod cílový mockup. 0.32 zachovává stejné výpočty a pouze mění vzhled.
 
 
-## 0.35
+## 0.36
 Kompletní vizuální přestavba stránky Analýza podle schváleného mockupu. Výpočty a produkční LOCK model se nemění. Přestavěn header, výběr zápasu, hero matchup, výsledkové karty, tržní karta, forma/model, cestování/kurz a historie.
 
 
-## 0.35
+## 0.36
 Finální fidelity pass podle schváleného mockupu: větší typografie a loga na Android šířce, párový graf střely/povolené střely, kompaktní lineup souhrn v kartě cestování. Modelová logika beze změny.
 
 
-## 0.35
+## 0.36
 Finální vizuální kontrola proti schválenému mockupu: header a navigace, ikona značky, větší loga ve výsledku a mřížka grafu. Skrytý technický řádek výběru konkrétního fixture zůstává v DOM pro automatiku, ale neruší hlavní návrh. Modelová logika beze změny.
+
+
+## 0.36
+Vizuální doladění podle schváleného mockupu a skutečného screenshotu z Androidu. Výpočty a produkční LOCK 5v5+tied se nemění.
