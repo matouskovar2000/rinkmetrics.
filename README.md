@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.37
+# NHL Team Shots Analyzer 0.38
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -46,3 +46,12 @@ Vizuální doladění podle schváleného mockupu a skutečného screenshotu z A
 - Lockbox 95% interval je výslovně označen jako historické pásmo, ne interval dnešní predikce.
 - Vyhodnocení kurzu nově ukazuje break-even pravděpodobnost a rozdíl modelu v procentních bodech.
 - Žádné váhy ani produkční model nebyly přeladěny.
+
+
+## 0.38 – pokročilá interpretace bez přeladění modelu
+- Vzhled 0.36/0.37 zůstává zachován; mění se hlavně informace uvnitř existujících detailů.
+- Produkční panel nově odděluje dnešní modelovou pravděpodobnost, separaci týmů a historickou jistotu validačního pásma. Historický 95% interval není vydáván za interval dnešní predikce.
+- Technické detaily zobrazují všechny shot attempts, 5v5 share, tied share, vážený LOCK control a PBP coverage pro oba týmy. Váhy LOCKu zůstávají 35/40/25 a nebyly přeladěny.
+- Forma a odpočinek/cestování jsou viditelné jako diagnostický kontext. Produkční LOCK je kvůli tomu nově nepřeváží ani nepřelaďuje.
+- Sestavy ukazují stav PROJECTED, čas načtení a výslovně uvádějí, že potvrzená game lineup není z aktuálního NHL.com zdroje k dispozici.
+- Horní označení verze bylo opraveno na v0.38.

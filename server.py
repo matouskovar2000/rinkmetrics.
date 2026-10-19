@@ -199,7 +199,7 @@ def fetch_lineups(force=False):
     if not force and _lineup_cache['data'] and now - _lineup_cache['at'] < 300:
         return _lineup_cache['data']
     req = Request(LINEUP_URL, headers={
-        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.30',
+        'User-Agent': 'Mozilla/5.0 NHLShotsAnalyzer/0.38',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.8',
     })
@@ -236,7 +236,7 @@ def _nhl_json(path, ttl=21600):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.30', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.38', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 data = json.loads(response.read(3_000_000).decode('utf-8'))
@@ -1065,7 +1065,11 @@ def _predict_game_event_share(home, away, game_date):
                 home_shots=_clip(total * share, 10.0, 50.0),
                 away_shots=_clip(total * (1.0 - share), 10.0, 50.0),
                 profile={'event_model': 'attempt_share', 'home_control': h_control,
-                         'away_control': a_control, 'home_shot_share': share})
+                         'away_control': a_control, 'home_shot_share': share,
+                         'home_attempt_share': h['attempt_share'], 'away_attempt_share': a['attempt_share'],
+                         'home_fivev5_share': h['fivev5_share'], 'away_fivev5_share': a['fivev5_share'],
+                         'home_tied_share': h['tied_share'], 'away_tied_share': a['tied_share'],
+                         'home_event_coverage': h['event_coverage'], 'away_event_coverage': a['event_coverage']})
 
 
 def _predict_game_event_matchup(home, away, game_date):
@@ -1281,7 +1285,7 @@ def _predict_game_winner_plus(home, away, game_date):
 
 
 def _shadow_analysis(home, away, game_date):
-    """0.30 live comparison plus production H2H payload.
+    """0.38 live comparison plus production H2H payload.
 
     LOCK 5v5+tied is now the primary model only for the ``Více střel`` market.
     If historical play-by-play coverage is insufficient, the payload explicitly
@@ -1319,6 +1323,7 @@ def _shadow_analysis(home, away, game_date):
             'home_shots': p1['home_shots'], 'away_shots': p1['away_shots'],
             'home_goals': p1['home_goals'], 'away_goals': p1['away_goals'],
             'h2h': p1_h2h, 'goals_55': goal_probs(p1),
+            'factors': p1.get('factors') or {},
         },
         'active_h2h': {
             'source': 'LOCK 5v5+tied' if ready else 'Model 1 fallback',
@@ -1340,7 +1345,7 @@ def _shadow_analysis(home, away, game_date):
             'home_goals': pg['home_goals'], 'away_goals': pg['away_goals'],
             'goals_55': goal_probs(pg), 'profile': pg.get('profile') or {},
         },
-        'note': ('Více střel používá v 0.30 LOCK 5v5+tied jako hlavní model, pokud je dost PBP historie; '
+        'note': ('Více střel používá v 0.38 LOCK 5v5+tied jako hlavní model, pokud je dost PBP historie; '
                  'jinak se bezpečně vrátí na Model 1. Pravděpodobnost zůstává raw LOCK, aby se po lockboxu '
                  'dodatečně nepřelaďovala. Góly a ostatní trhy zůstávají na Modelu 1 / shadow režimu.'),
     }
@@ -3710,7 +3715,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             req = Request(
                 'https://api-web.nhle.com/v1' + path,
-                headers={'User-Agent': 'NHLShotsAnalyzer/0.30', 'Accept': 'application/json'},
+                headers={'User-Agent': 'NHLShotsAnalyzer/0.38', 'Accept': 'application/json'},
             )
             with urlopen(req, timeout=18) as response:
                 payload = response.read(3_000_000)
