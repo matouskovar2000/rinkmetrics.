@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.38
+# NHL Team Shots Analyzer 0.39
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -55,3 +55,11 @@ Vizuální doladění podle schváleného mockupu a skutečného screenshotu z A
 - Forma a odpočinek/cestování jsou viditelné jako diagnostický kontext. Produkční LOCK je kvůli tomu nově nepřeváží ani nepřelaďuje.
 - Sestavy ukazují stav PROJECTED, čas načtení a výslovně uvádějí, že potvrzená game lineup není z aktuálního NHL.com zdroje k dispozici.
 - Horní označení verze bylo opraveno na v0.38.
+
+
+## 0.39 – funkční dotažení
+- Vzhled 0.38 zůstává beze změny.
+- Vyhodnocení kurzu po změně trhu automaticky předvybere hlavní modelový výběr: u 1/X/2 nejsilnější z 1/X/2, u Více střel favorizovaný tým a u line marketů pravděpodobnější stranu.
+- Produkční model ukazuje „Proč model“ přímo bez rozkliknutí technických detailů.
+- Karty odpočinku/cestování zobrazují stav sestavy PROJECTED / NENALEZENO / JINÉ DATUM / NEDOSTUPNÉ a čas aktualizace zdroje.
+- LOCK 5v5+tied, jeho váhy a všechny výpočty zůstávají beze změny.
