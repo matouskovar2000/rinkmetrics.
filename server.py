@@ -3697,10 +3697,6 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path == '/forward-v042/report':
-            return self.respond(200, forward.report())
-        if parsed.path == '/forward-v042/settle':
-            return self.handle_forward_settle()
         if parsed.path == '/lineups':
             return self.handle_lineups(parse_qs(parsed.query))
         if parsed.path == '/backtest':
@@ -3732,47 +3728,6 @@ class Handler(SimpleHTTPRequestHandler):
             self.respond(502, {'error': f'NHL API HTTP {exc.code}'})
         except (URLError, TimeoutError):
             self.respond(502, {'error': 'NHL API není dostupné'})
-
-    def do_POST(self):
-        if urlparse(self.path).path != '/forward-v042/capture':
-            return self.respond(404, {'error':'Unknown endpoint'})
-        try:
-            length=int(self.headers.get('Content-Length','0'))
-            if not 0 < length <= 2048: raise ValueError('Invalid payload length')
-            req=json.loads(self.rfile.read(length))
-            gid=int(req['game_id'])
-            box=_nhl_json(f'/gamecenter/{gid}/boxscore',ttl=60)
-            home=(box.get('homeTeam') or {}).get('abbrev')
-            away=(box.get('awayTeam') or {}).get('abbrev')
-            start=box.get('startTimeUTC')
-            if not home or not away or not start: raise ValueError('Missing NHL fixture')
-            if box.get('gameState') in ('LIVE','CRIT','OFF','FINAL'): raise ValueError('Not pregame')
-            result=_shadow_analysis(home,away,start[:10])
-            if not result: raise ValueError('No model output')
-            active=result.get('active_h2h') or {}
-            if not active.get('ready'): raise ValueError('LOCK unavailable; no fallback captured')
-            p=float((active.get('h2h') or {})['home'])
-            payload={'game_id':gid,'start_utc':start,'home':home,'away':away,'model':'LOCK 5v5+tied v0.41','probability_home_more_shots':p,'shadow':result}
-            return self.respond(200,forward.capture(gid,start,home,away,'LOCK 5v5+tied v0.41',p,payload))
-        except (ValueError,KeyError,TypeError) as e:
-            return self.respond(422,{'error':str(e)[:160]})
-        except Exception as e:
-            return self.respond(502,{'error':'Capture unavailable','detail':str(e)[:120]})
-
-    def handle_forward_settle(self):
-        completed=0;skipped=0
-        for row in forward.pending():
-            if forward.utc(row['start_utc']) >= datetime.now(timezone.utc): continue
-            try:
-                box=_nhl_json(f"/gamecenter/{row['game_id']}/boxscore",ttl=60)
-                if box.get('gameState') not in ('OFF','FINAL'): continue
-                home=box.get('homeTeam') or {};away=box.get('awayTeam') or {}
-                if home.get('abbrev')!=row['home'] or away.get('abbrev')!=row['away']: continue
-                hs,aas=home.get('sog'),away.get('sog')
-                if not isinstance(hs,int) or not isinstance(aas,int): continue
-                forward.settle(row['game_id'],hs,aas);completed+=1
-            except Exception: skipped+=1
-        return self.respond(200,{'settled':completed,'errors':skipped,'report':forward.report()})
 
     def _parse_backtest_query(self, query):
         team = (query.get('team', ['FLA'])[0] or 'FLA').upper()
@@ -3919,14 +3874,6 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-
-# v0.42 forward validation (self-contained).
-import types as _forward_types
-forward = _forward_types.ModuleType("forward_v042_embedded")
-forward.__file__ = __file__
-exec(compile('"""Append-only pregame forecasts and forward evaluation; no model fitting."""\nimport hashlib, json, math, os, sqlite3\nfrom datetime import datetime, timezone\nfrom pathlib import Path\n\nDB = Path(os.environ.get(\'FORWARD_DB_PATH\', str(Path(__file__).with_name(\'forward_v042.sqlite3\'))))\ndef connect():\n    DB.parent.mkdir(parents=True, exist_ok=True)\n    c=sqlite3.connect(str(DB), timeout=15)\n    c.row_factory=sqlite3.Row\n    c.execute(\'PRAGMA busy_timeout=15000\')\n    c.execute(\'CREATE TABLE IF NOT EXISTS forecasts (game_id INTEGER PRIMARY KEY, start_utc TEXT NOT NULL, created_utc TEXT NOT NULL, home TEXT NOT NULL, away TEXT NOT NULL, model TEXT NOT NULL, probability REAL NOT NULL, payload TEXT NOT NULL, sha256 TEXT NOT NULL)\')\n    c.execute(\'CREATE TABLE IF NOT EXISTS outcomes (game_id INTEGER PRIMARY KEY REFERENCES forecasts(game_id), observed_utc TEXT NOT NULL, home_sog INTEGER NOT NULL, away_sog INTEGER NOT NULL, result INTEGER, source TEXT NOT NULL)\')\n    c.execute(\'CREATE TRIGGER IF NOT EXISTS immutable_forecasts_update BEFORE UPDATE ON forecasts BEGIN SELECT RAISE(ABORT,"immutable forecast"); END\')\n    c.execute(\'CREATE TRIGGER IF NOT EXISTS immutable_forecasts_delete BEFORE DELETE ON forecasts BEGIN SELECT RAISE(ABORT,"immutable forecast"); END\')\n    c.execute(\'CREATE TRIGGER IF NOT EXISTS immutable_outcomes_update BEFORE UPDATE ON outcomes BEGIN SELECT RAISE(ABORT,"immutable outcome"); END\')\n    c.execute(\'CREATE TRIGGER IF NOT EXISTS immutable_outcomes_delete BEFORE DELETE ON outcomes BEGIN SELECT RAISE(ABORT,"immutable outcome"); END\')\n    return c\n\ndef utc(s):\n    d=datetime.fromisoformat(s.replace(\'Z\',\'+00:00\'))\n    if d.tzinfo is None: raise ValueError(\'UTC offset required\')\n    return d.astimezone(timezone.utc)\n\ndef capture(game_id,start,home,away,model,p,payload):\n    now=datetime.now(timezone.utc)\n    if utc(start)<=now: raise ValueError(\'Game already started\')\n    if not (0<=p<=1 and math.isfinite(p)): raise ValueError(\'Invalid probability\')\n    raw=json.dumps(payload,sort_keys=True,separators=(\',\',\':\'),allow_nan=False)\n    digest=hashlib.sha256(raw.encode()).hexdigest()\n    with connect() as c:\n        c.execute(\'INSERT OR IGNORE INTO forecasts VALUES (?,?,?,?,?,?,?,?,?)\',(game_id,start,now.isoformat(),home,away,model,p,raw,digest))\n        row=c.execute(\'SELECT * FROM forecasts WHERE game_id=?\',(game_id,)).fetchone()\n    return {\'game_id\':game_id,\'created_utc\':row[\'created_utc\'],\'model\':row[\'model\'],\'sha256\':row[\'sha256\'],\'already_exists\':row[\'sha256\']!=digest}\n\ndef settle(game_id,home_sog,away_sog):\n    if not all(isinstance(v,int) and v>=0 for v in (home_sog,away_sog)): raise ValueError(\'Invalid SOG\')\n    result=1 if home_sog>away_sog else 0 if home_sog<away_sog else None\n    with connect() as c:\n        c.execute(\'INSERT OR IGNORE INTO outcomes VALUES (?,?,?,?,?,?)\',(game_id,datetime.now(timezone.utc).isoformat(),home_sog,away_sog,result,\'NHL official boxscore\'))\n\ndef wilson(w,n):\n    if not n:return [None,None]\n    z=1.9599639845;p=w/n;d=1+z*z/n;m=(p+z*z/(2*n))/d;r=z*math.sqrt(p*(1-p)/n+z*z/(4*n*n))/d\n    return [m-r,m+r]\n\ndef report():\n    with connect() as c:\n        rows=c.execute(\'SELECT f.*,o.home_sog,o.away_sog,o.result FROM forecasts f LEFT JOIN outcomes o USING(game_id) ORDER BY f.created_utc\').fetchall()\n    valid=[r for r in rows if r[\'result\'] is not None]\n    def metrics(rs):\n        n=len(rs);hits=sum((r[\'probability\']>=.5)==bool(r[\'result\']) for r in rs)\n        return {\'n\':n,\'brier\':sum((r[\'probability\']-r[\'result\'])**2 for r in rs)/n if n else None,\'hit_rate\':hits/n if n else None,\'hit_rate_ci95\':wilson(hits,n),\'mean_probability\':sum(r[\'probability\'] for r in rs)/n if n else None,\'observed_home_win_rate\':sum(r[\'result\'] for r in rs)/n if n else None}\n    bins=[]\n    for lo,hi in ((0,.2),(.2,.4),(.4,.6),(.6,.8),(.8,1.000001)):\n        group=[r for r in valid if lo<=r[\'probability\']<hi]\n        bins.append({\'range\':[lo,min(hi,1)],**metrics(group)})\n    confidence=[]\n    for lo,hi in ((.5,.6),(.6,.7),(.7,.8),(.8,1.000001)):\n        group=[r for r in valid if lo<=max(r[\'probability\'],1-r[\'probability\'])<hi]\n        confidence.append({\'range\':[lo,min(hi,1)],**metrics(group)})\n    return {\'total\':len(rows),\'pending\':sum(r[\'home_sog\'] is None for r in rows),\'ties_excluded\':sum(r[\'home_sog\'] is not None and r[\'result\'] is None for r in rows),\'overall\':metrics(valid),\'calibration\':bins,\'confidence_bands\':confidence,\'model\':\'Frozen pregame home-more-shots probability; ties excluded from binary metrics\'}\n\ndef pending():\n    with connect() as c:\n        return [dict(r) for r in c.execute(\'SELECT f.game_id,f.start_utc,f.home,f.away FROM forecasts f LEFT JOIN outcomes o USING(game_id) WHERE o.game_id IS NULL\')]\n', "forward_v042_embedded", "exec"), forward.__dict__)
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', '8000'))
     ThreadingHTTPServer(('0.0.0.0', port), Handler).serve_forever()
-
