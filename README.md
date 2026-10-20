@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.39
+# NHL Team Shots Analyzer 0.40
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -57,9 +57,17 @@ Vizuální doladění podle schváleného mockupu a skutečného screenshotu z A
 - Horní označení verze bylo opraveno na v0.38.
 
 
-## 0.39 – funkční dotažení
+## 0.40 – funkční dotažení
 - Vzhled 0.38 zůstává beze změny.
 - Vyhodnocení kurzu po změně trhu automaticky předvybere hlavní modelový výběr: u 1/X/2 nejsilnější z 1/X/2, u Více střel favorizovaný tým a u line marketů pravděpodobnější stranu.
 - Produkční model ukazuje „Proč model“ přímo bez rozkliknutí technických detailů.
 - Karty odpočinku/cestování zobrazují stav sestavy PROJECTED / NENALEZENO / JINÉ DATUM / NEDOSTUPNÉ a čas aktualizace zdroje.
 - LOCK 5v5+tied, jeho váhy a všechny výpočty zůstávají beze změny.
+
+
+## 0.40 – stabilita a shoda modelů
+- Vzhled 0.39 zůstává zachovaný.
+- Produkční panel nově ukazuje citlivost favorizovaného týmu při posunu ±0,75 očekávané střely.
+- Zobrazuje, zda Model 1 a LOCK 5v5+tied volí stejný tým, a velikost posunu pravděpodobnosti.
+- Zobrazuje minimální PBP coverage obou týmů jako samostatnou kontrolu kvality dat.
+- Citlivostní rozsah není confidence interval ani nová kalibrace; váhy LOCKu se nemění.
