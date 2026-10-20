@@ -80,3 +80,6 @@ Vizuální doladění podle schváleného mockupu a skutečného screenshotu z A
 - „Proč model“ zvýrazňuje nejsilnější vážený PBP faktor.
 - Technické detaily ukazují i změnu rozdílu očekávaných střel Model 1 → LOCK.
 - Produkční váhy, lockbox validace ani vzhled nebyly změněny.
+
+## 0.42 — forward validation (development)
+No production model weight or CSS changes. Automatic pregame snapshot only when fixture has an NHL ID, start time is future, and LOCK is ready. Server independently recomputes shadow model, stores SQLite immutable forecast; repeated capture cannot overwrite. `GET /forward-v042/settle` fetches official finished NHL boxscores and appends outcomes; `GET /forward-v042/report` returns Brier, calibration, hit rate, Wilson intervals and confidence bands. Tied SOG games are reported separately and excluded from binary home-more-shots metrics. SQLite file must live on persistent storage in production; set `FORWARD_DB_PATH` to persistent volume. Settling currently requires calling the endpoint (e.g. scheduler); no unattended background scheduler is installed. This is an initial integration, not independently forward-validated yet.
