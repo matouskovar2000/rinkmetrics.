@@ -1,4 +1,4 @@
-# NHL Team Shots Analyzer 0.40
+# NHL Team Shots Analyzer 0.41
 
 Verze 0.31 je vizuální přestavba Analýzy podle schváleného světlého mockupu. Produkční výpočty se nemění.
 
@@ -57,7 +57,7 @@ Vizuální doladění podle schváleného mockupu a skutečného screenshotu z A
 - Horní označení verze bylo opraveno na v0.38.
 
 
-## 0.40 – funkční dotažení
+## 0.41 – funkční dotažení
 - Vzhled 0.38 zůstává beze změny.
 - Vyhodnocení kurzu po změně trhu automaticky předvybere hlavní modelový výběr: u 1/X/2 nejsilnější z 1/X/2, u Více střel favorizovaný tým a u line marketů pravděpodobnější stranu.
 - Produkční model ukazuje „Proč model“ přímo bez rozkliknutí technických detailů.
@@ -65,9 +65,18 @@ Vizuální doladění podle schváleného mockupu a skutečného screenshotu z A
 - LOCK 5v5+tied, jeho váhy a všechny výpočty zůstávají beze změny.
 
 
-## 0.40 – stabilita a shoda modelů
+## 0.41 – stabilita a shoda modelů
 - Vzhled 0.39 zůstává zachovaný.
 - Produkční panel nově ukazuje citlivost favorizovaného týmu při posunu ±0,75 očekávané střely.
 - Zobrazuje, zda Model 1 a LOCK 5v5+tied volí stejný tým, a velikost posunu pravděpodobnosti.
 - Zobrazuje minimální PBP coverage obou týmů jako samostatnou kontrolu kvality dat.
 - Citlivostní rozsah není confidence interval ani nová kalibrace; váhy LOCKu se nemění.
+
+
+## 0.41 – přesnější vysvětlení LOCKu
+- Vzhled zůstává stejný jako 0.40.
+- Nejasné slovní hodnocení „Separace týmů“ bylo nahrazeno přesným „Náskokem modelu“ v procentních bodech.
+- PBP faktory nově ukazují vážený příspěvek všech pokusů, 5v5 a pokusů při shodném skóre do rozdílu LOCK controlu.
+- „Proč model“ zvýrazňuje nejsilnější vážený PBP faktor.
+- Technické detaily ukazují i změnu rozdílu očekávaných střel Model 1 → LOCK.
+- Produkční váhy, lockbox validace ani vzhled nebyly změněny.
